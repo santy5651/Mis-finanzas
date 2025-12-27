@@ -1,4 +1,3 @@
-
 'use client';
 
 import Link from 'next/link';
@@ -15,23 +14,23 @@ import {
 } from 'lucide-react';
 
 const navItems = [
-    { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-
+    { href: '/', label: 'Resumen', icon: LayoutDashboard },
     { href: '/transacciones/ingresos', label: 'Ingresos', icon: TrendingUp },
+    { href: '/ingresos-proyectados', label: 'Ingresos Proyectados', icon: TrendingUp },
     { href: '/transacciones/egresos', label: 'Egresos', icon: Wallet },
-    { href: '/snapshots', label: 'Snapshots / Saldos', icon: Presentation },
-    { href: '/deudas', label: 'Deudas del Mes', icon: CreditCard },
+    { href: '/snapshots', label: 'Saldos', icon: Presentation },
+    { href: '/deudas', label: 'Deudas Totales', icon: CreditCard },
     { href: '/cuentas', label: 'Cuentas / Inversiones', icon: PiggyBank },
-    { href: '/config', label: 'Configuración', icon: Settings },
+    { href: '/config', label: 'Configuracion', icon: Settings },
 ];
 
 export function Sidebar() {
     const pathname = usePathname();
 
     return (
-        <aside className="w-64 bg-gray-900 text-white min-h-screen p-4 flex flex-col">
+        <aside className="w-64 bg-gray-900 text-white h-full overflow-y-auto p-4 flex flex-col">
             <div className="mb-8 px-2">
-                <h1 className="text-xl font-bold">Mi Economía</h1>
+                <h1 className="text-xl font-bold">Mi Economia</h1>
             </div>
             <nav className="space-y-2 flex-1">
                 {navItems.map((item) => {

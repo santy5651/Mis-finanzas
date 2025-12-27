@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useForm } from 'react-hook-form';
@@ -8,6 +7,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db/db';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useActivePeriod } from '@/lib/hooks/use-active-period';
@@ -38,11 +38,11 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
             method: defaultValues?.method ?? 'DEBIT',
             installments: defaultValues?.installments ?? 1,
             entityId: defaultValues?.entityId ?? undefined,
+            isRecurring: defaultValues?.isRecurring ?? false,
             notes: defaultValues?.notes ?? undefined,
         }
     });
 
-    // Update periodId if it changes
     useEffect(() => {
         if (periodId && !defaultValues?.id) {
             form.setValue('periodId', periodId);
@@ -60,7 +60,8 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                 amount: 0,
                 reason: '',
                 method: 'DEBIT',
-                installments: 1
+                installments: 1,
+                isRecurring: false
             });
             onSuccess?.();
         } catch (error) {
@@ -110,7 +111,7 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                     name="reason"
                     render={({ field }) => (
                         <FormItem>
-                            <FormLabel>Razón / Descripción</FormLabel>
+                            <FormLabel>Razon / Descripcion</FormLabel>
                             <FormControl>
                                 <Input placeholder="Ej: Mercado, Gasolina..." {...field} />
                             </FormControl>
@@ -129,7 +130,7 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                                 <Select onValueChange={field.onChange} defaultValue={field.value}>
                                     <FormControl>
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select currency" />
+                                            <SelectValue placeholder="Seleccione moneda" />
                                         </SelectTrigger>
                                     </FormControl>
                                     <SelectContent>
@@ -149,7 +150,7 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                         name="method"
                         render={({ field }) => (
                             <FormItem>
-                                <FormLabel>Método de Pago</FormLabel>
+                                <FormLabel>Metodo de Pago</FormLabel>
                                 <Select onValueChange={field.onChange} defaultValue={field.value}>
                                     <FormControl>
                                         <SelectTrigger>
@@ -157,8 +158,8 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                                         </SelectTrigger>
                                     </FormControl>
                                     <SelectContent>
-                                        <SelectItem value="DEBIT">Débito</SelectItem>
-                                        <SelectItem value="CREDIT_CARD">Tarjeta de Crédito</SelectItem>
+                                        <SelectItem value="DEBIT">Debito</SelectItem>
+                                        <SelectItem value="CREDIT_CARD">Tarjeta de Credito</SelectItem>
                                         <SelectItem value="CASH">Efectivo</SelectItem>
                                         <SelectItem value="TRANSFER">Transferencia</SelectItem>
                                         <SelectItem value="OTHER">Otro</SelectItem>
@@ -188,6 +189,26 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                         )}
                     />
                 </div>
+
+                <FormField
+                    control={form.control}
+                    name="isRecurring"
+                    render={({ field }) => (
+                        <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
+                            <FormControl>
+                                <Checkbox
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                />
+                            </FormControl>
+                            <div className="space-y-1 leading-none">
+                                <FormLabel>
+                                    Gasto mensual persistente
+                                </FormLabel>
+                            </div>
+                        </FormItem>
+                    )}
+                />
 
                 <FormField
                     control={form.control}

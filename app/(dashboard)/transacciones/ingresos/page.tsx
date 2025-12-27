@@ -17,18 +17,28 @@ import { EditButton } from '@/components/ui/edit-button';
 import { Income } from '@/lib/db/db';
 import { CopyIncomesButton } from '@/components/dashboard/copy-incomes-button';
 import { InlineAmount } from '@/components/ui/inline-amount';
+import { PeriodSelector } from '@/components/dashboard/period-selector';
+import { formatMoney } from '@/lib/utils';
+import { toCOP } from '@/lib/calculations/financials';
 
 export default function IncomesPage() {
     const { periodId } = useActivePeriod();
     const [open, setOpen] = useState(false);
     const [editingItem, setEditingItem] = useState<Income | null>(null);
 
-    const incomes = useLiveQuery(
-        () => db.incomes.where('periodId').equals(periodId).toArray(),
-        [periodId]
-    );
+    const incomes = useLiveQuery(async () => {
+        const perIncomes = await db.incomes.where('periodId').equals(periodId).toArray();
+        const entities = await db.entities.toArray();
+        const entMap = new Map(entities.map(e => [e.id, e]));
+        return perIncomes.map(inc => ({
+            ...inc,
+            entityName: inc.entityId ? entMap.get(inc.entityId)?.name || 'Desconocida' : 'Ninguna'
+        }));
+    }, [periodId]);
 
-    const totalIncome = incomes?.reduce((sum, inc) => sum + inc.amount, 0) || 0;
+    const period = useLiveQuery(() => db.periods.get(periodId), [periodId]);
+    const safePeriod = period || { id: periodId, year: 0, month: 0, usdCopRate: null };
+    const totalIncome = incomes?.reduce((sum, inc) => sum + toCOP(inc.amount, inc.currency, safePeriod), 0) || 0;
 
     const handleOpenChange = (isOpen: boolean) => {
         setOpen(isOpen);
@@ -49,7 +59,17 @@ export default function IncomesPage() {
             <div className="flex justify-between items-center">
                 <h1 className="text-3xl font-bold">Ingresos ({periodId})</h1>
                 <div className="flex gap-2">
+                    <PeriodSelector />
                     <CopyIncomesButton />
+                    <Button
+                        variant="destructive"
+                        onClick={async () => {
+                            if (!confirm(`Eliminar todos los ingresos del periodo ${periodId}?`)) return;
+                            await db.incomes.where('periodId').equals(periodId).delete();
+                        }}
+                    >
+                        Borrar Todo
+                    </Button>
                     <Dialog open={open} onOpenChange={handleOpenChange}>
                         <DialogTrigger asChild>
                             <Button onClick={() => setEditingItem(null)}><Plus className="mr-2 h-4 w-4" /> Nuevo Ingreso</Button>
@@ -78,7 +98,7 @@ export default function IncomesPage() {
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold">
-                            ${totalIncome.toLocaleString()}
+                            ${formatMoney(totalIncome)} COP
                         </div>
                     </CardContent>
                 </Card>
@@ -94,6 +114,7 @@ export default function IncomesPage() {
                             <TableRow>
                                 <TableHead>Fecha</TableHead>
                                 <TableHead>Concepto</TableHead>
+                                <TableHead>Entidad</TableHead>
                                 <TableHead>Monto</TableHead>
                                 <TableHead>Moneda</TableHead>
                                 <TableHead>Tipo</TableHead>
@@ -103,18 +124,19 @@ export default function IncomesPage() {
                         <TableBody>
                             {incomes?.length === 0 && (
                                 <TableRow>
-                                    <TableCell colSpan={6} className="text-center text-muted-foreground">
-                                        No hay ingresos registrados en este periodo.
-                                    </TableCell>
-                                </TableRow>
-                            )}
-                            {incomes?.map((income) => (
+                                <TableCell colSpan={7} className="text-center text-muted-foreground">
+                                    No hay ingresos registrados en este periodo.
+                                </TableCell>
+                            </TableRow>
+                        )}
+                        {incomes?.map((income) => (
 
 
                                 // ... (in component)
                                 <TableRow key={income.id}>
                                     <TableCell>{income.date}</TableCell>
                                     <TableCell>{income.concept}</TableCell>
+                                    <TableCell>{income.entityName}</TableCell>
                                     <TableCell>
                                         <InlineAmount
                                             value={income.amount}

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
+import { cn, formatMoney } from "@/lib/utils";
 
 interface InlineAmountProps {
     value: number;
@@ -90,7 +90,7 @@ export function InlineAmount({ value, currency = "COP", onSave, className }: Inl
             )}
             title="Click to edit"
         >
-            ${value.toLocaleString()}
+            ${formatMoney(value, currency as 'COP' | 'USD')}
             {/* Currency usually redundant if column header says it, but kept if passed explicitly */}
         </span>
     );

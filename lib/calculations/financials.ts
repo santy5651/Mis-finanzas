@@ -8,6 +8,11 @@ export const CAPITAL_CATEGORIES: AccountCategory[] = [
     'INVEST_SHORT', 'INVEST_MEDIUM', 'INVEST_LONG', 'RETIREMENT', 'OTHER'
 ];
 
+function getAccountCategories(account: Account): AccountCategory[] {
+    const legacyCategory = (account as Account & { category?: AccountCategory }).category;
+    return account.categories?.length ? account.categories : (legacyCategory ? [legacyCategory] : []);
+}
+
 /**
  * Converts an amount to COP using the period's TRM.
  * If currency is already COP, returns amount.
@@ -98,11 +103,18 @@ export interface PeriodSummary {
     plannedExpenses?: number; // Optional input
 }
 
+function getNetDebtAmount(debt: Debt, period: Period): number {
+    const amortization = debt.amortizationAmount ?? 0;
+    const net = debt.amount - amortization;
+    return Math.max(0, toCOP(net, debt.currency, period));
+}
+
 export function calculatePeriodSummary(
     period: Period,
     incomes: Income[],
     expenses: Expense[],
     debts: Debt[],
+    prevDebts: Debt[],
     accounts: Account[],
     snapshots: AccountSnapshot[],
     prevSnapshots: AccountSnapshot[], // Needed for Real Return
@@ -156,7 +168,8 @@ export function calculatePeriodSummary(
     const balanceWithoutSalary = incomeNonSalaryReal - expensesTotal;
 
     // 4. Debt
-    const debtTotal = debts.reduce((sum, d) => sum + toCOP(d.amount, d.currency, period), 0);
+    const debtTotal = debts.reduce((sum, d) => sum + getNetDebtAmount(d, period), 0);
+    const prevDebtTotal = prevDebts.reduce((sum, d) => sum + getNetDebtAmount(d, period), 0);
 
     // 5. Liquid & Capital
     let liquidTotal = 0;
@@ -168,10 +181,11 @@ export function calculatePeriodSummary(
 
         const valCOP = toCOP(snap.balance, account.currency, period);
 
-        if (LIQUID_CATEGORIES.includes(account.category)) {
+        const categories = getAccountCategories(account);
+        if (categories.some(category => LIQUID_CATEGORIES.includes(category))) {
             liquidTotal += valCOP;
         }
-        if (CAPITAL_CATEGORIES.includes(account.category)) {
+        if (categories.some(category => CAPITAL_CATEGORIES.includes(category))) {
             capitalTotal += valCOP;
         }
     });
@@ -197,14 +211,18 @@ export function calculatePeriodSummary(
     let prevCapitalTotal = 0;
     prevSnapshots.forEach(snap => {
         const account = accounts.find(a => a.id === snap.accountId);
-        if (account && CAPITAL_CATEGORIES.includes(account.category)) {
+        const categories = account ? getAccountCategories(account) : [];
+        if (account && categories.some(category => CAPITAL_CATEGORIES.includes(category))) {
             prevCapitalTotal += toCOP(snap.balance, account.currency, period); // Assuming same TRM or re-converting T-1 at T rates? Prompt implies historical is usually fixed but for comparison we typically use consistent rates or raw deltas. 
             // Actually, "Delta Patrimonial" usually implies simply CapitalT - CapitalT-1 in reporting currency.
         }
     });
 
+    const netCapitalTotal = capitalTotal - debtTotal;
+    const netPrevCapitalTotal = prevCapitalTotal - prevDebtTotal;
+
     const savingsFlow = incomeTotal - expensesTotal; // Theoretical savings
-    const savingsStock = capitalTotal - prevCapitalTotal; // Actual savings (Delta Capital)
+    const savingsStock = netCapitalTotal - netPrevCapitalTotal; // Actual savings (Delta Capital)
 
     const possibleLeakage = savingsFlow - savingsStock;
     // If Flow says we saved 1M, but Stock only went up 800k, then 200k leaked.
@@ -220,7 +238,7 @@ export function calculatePeriodSummary(
         balanceWithoutSalary,
         debtTotal,
         liquidTotal,
-        capitalTotal,
+        capitalTotal: netCapitalTotal,
         unspecifiedExpense: possibleLeakage > 0 ? possibleLeakage : 0, // Only if positive
         plannedExpenses
     };

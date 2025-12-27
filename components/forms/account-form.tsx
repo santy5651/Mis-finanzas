@@ -23,6 +23,18 @@ interface AccountFormProps {
 export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
     const entities = useLiveQuery(() => db.entities.toArray()) || [];
     const categories = accountCategorySchema.options;
+    const getCategoryLabel = (cat: string) => {
+        if (cat === 'CASH') return 'Efectivo';
+        if (cat === 'LOW_AMOUNT_ACCOUNT') return 'Cuenta de Bajo Monto';
+        if (cat === 'SAVINGS') return 'Ahorros';
+        if (cat === 'EMERGENCY_FUND') return 'Fondo de Emergencia';
+        if (cat === 'INVEST_SHORT') return 'Bajo Riesgo';
+        if (cat === 'INVEST_MEDIUM') return 'Riesgo Moderado';
+        if (cat === 'INVEST_LONG') return 'Alto Riesgo';
+        if (cat === 'RETIREMENT') return 'Retiro';
+        if (cat === 'OTHER') return 'Otro';
+        return cat.replace(/_/g, ' ');
+    };
 
     const form = useForm<AccountFormValues>({
         resolver: zodResolver(accountSchema),
@@ -31,7 +43,7 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
             name: defaultValues?.name ?? '',
             entityId: defaultValues?.entityId ?? '',
             accountType: defaultValues?.accountType ?? '',
-            category: defaultValues?.category ?? 'SAVINGS',
+            categories: defaultValues?.categories?.length ? defaultValues.categories : ['SAVINGS'],
             currency: defaultValues?.currency ?? 'COP',
             isSalaryAccount: defaultValues?.isSalaryAccount ?? false,
             isActive: defaultValues?.isActive ?? true,
@@ -46,7 +58,7 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                 name: '',
                 entityId: '',
                 accountType: '',
-                category: 'SAVINGS',
+                categories: ['SAVINGS'],
                 currency: 'COP',
                 isSalaryAccount: false,
                 isActive: true,
@@ -120,24 +132,36 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                 <div className="grid grid-cols-2 gap-4">
                     <FormField
                         control={form.control}
-                        name="category"
+                        name="categories"
                         render={({ field }) => (
                             <FormItem>
-                                <FormLabel>Categoría</FormLabel>
-                                <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                    <FormControl>
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Seleccione categoría" />
-                                        </SelectTrigger>
-                                    </FormControl>
-                                    <SelectContent>
-                                        {categories.map(cat => (
-                                            <SelectItem key={cat} value={cat}>
-                                                {cat.replace(/_/g, ' ')}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                                <FormLabel>Categoria</FormLabel>
+                                <div className="grid gap-2 rounded-md border p-3">
+                                    {categories.map(cat => {
+                                        const checked = field.value?.includes(cat) ?? false;
+                                        return (
+                                            <FormItem key={cat} className="flex flex-row items-center space-x-2 space-y-0">
+                                                <FormControl>
+                                                    <Checkbox
+                                                        checked={checked}
+                                                        onCheckedChange={(next) => {
+                                                            const values = new Set(field.value ?? []);
+                                                            if (next) {
+                                                                values.add(cat);
+                                                            } else {
+                                                                values.delete(cat);
+                                                            }
+                                                            field.onChange(Array.from(values));
+                                                        }}
+                                                    />
+                                                </FormControl>
+                                                <FormLabel className="font-normal">
+                                                    {getCategoryLabel(cat)}
+                                                </FormLabel>
+                                            </FormItem>
+                                        );
+                                    })}
+                                </div>
                                 <FormMessage />
                             </FormItem>
                         )}
@@ -178,7 +202,7 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                                         onCheckedChange={field.onChange}
                                     />
                                 </FormControl>
-                                <FormLabel>Es Cuenta de Nómina</FormLabel>
+                                <FormLabel>Es Cuenta de Nomina</FormLabel>
                             </FormItem>
                         )}
                     />

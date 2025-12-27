@@ -20,6 +20,14 @@ interface EntityFormProps {
 
 export function EntityForm({ onSuccess, defaultValues }: EntityFormProps) {
     const types = entityTypeSchema.options;
+    const getTypeLabel = (type: string) => {
+        if (type === 'BANK') return 'Banco';
+        if (type === 'FRANCHISE') return 'Comercio';
+        if (type === 'PERSON') return 'Persona';
+        if (type === 'EMPLOYER') return 'Empleador';
+        if (type === 'BROKER') return 'Broker';
+        return 'Otro';
+    };
 
     const form = useForm<EntityFormValues>({
         resolver: zodResolver(entitySchema),
@@ -79,7 +87,7 @@ export function EntityForm({ onSuccess, defaultValues }: EntityFormProps) {
                                 <SelectContent>
                                     {types.map(t => (
                                         <SelectItem key={t} value={t}>
-                                            {t}
+                                            {getTypeLabel(t)}
                                         </SelectItem>
                                     ))}
                                 </SelectContent>

@@ -129,7 +129,7 @@ export function IncomeForm({ onSuccess, defaultValues }: IncomeFormProps) {
                                 <Select onValueChange={field.onChange} defaultValue={field.value}>
                                     <FormControl>
                                         <SelectTrigger>
-                                            <SelectValue placeholder="Select currency" />
+                                            <SelectValue placeholder="Seleccione moneda" />
                                         </SelectTrigger>
                                     </FormControl>
                                     <SelectContent>

@@ -8,7 +8,7 @@ export default function SnapshotsPage() {
         <div className="space-y-6">
             <div className="flex justify-between items-center">
                 <div>
-                    <h1 className="text-3xl font-bold">Fotos Mensuales (Snapshots)</h1>
+                    <h1 className="text-3xl font-bold">Saldos Mensuales</h1>
                     <p className="text-muted-foreground">
                         Registra el saldo de tus cuentas al inicio de cada mes para calcular rendimientos.
                     </p>

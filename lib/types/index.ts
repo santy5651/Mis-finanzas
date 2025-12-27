@@ -13,6 +13,7 @@ export type AccountCategory =
   | 'OTHER';
 export type ExpenseMethod = 'DEBIT' | 'CREDIT_CARD' | 'CASH' | 'TRANSFER' | 'OTHER';
 export type DebtType = 'CREDIT_CARD' | 'PERSONAL' | 'LOAN' | 'OTHER';
+export type ProjectedIncomeType = 'FIXED_EA' | 'VARIABLE_MONTHLY' | 'ONE_TIME' | 'SALARY';
 
 export interface Period {
   id: string; // "YYYY-MM"
@@ -33,7 +34,7 @@ export interface Account {
   name: string;
   entityId: string; // FK Entity
   accountType: string; // "Ahorros", "CDT", etc.
-  category: AccountCategory;
+  categories: AccountCategory[];
   currency: Currency;
   isSalaryAccount?: boolean;
   isActive: boolean;
@@ -73,16 +74,45 @@ export interface Expense {
   currency: Currency;
   method: ExpenseMethod;
   installments: number; // Defecto 1
+  isRecurring?: boolean; // Gasto mensual persistente
   notes?: string;
 }
 
 export interface Debt {
   id: string; // UUID
+  seriesId: string; // UUID for same debt across months
   periodId: string;
   entityId: string;
   debtType: DebtType;
   amount: number; // Valor de la deuda
+  amortizationAmount?: number; // Aporte a capital en el mes
+  increaseAmount?: number; // Incremento del mes
   currency: Currency;
-  dueDate?: string;
+  dueDay?: number; // Dia del mes (1-31)
+  notes?: string;
+  history?: DebtHistoryEntry[];
+}
+
+export interface DebtHistoryEntry {
+  id: string; // UUID
+  type: 'AMORTIZATION' | 'INCREASE';
+  amount: number;
+  note?: string;
+  createdAt: string;
+}
+
+export interface ProjectedIncome {
+  id: string; // UUID
+  periodId: string;
+  date?: string; // ISO Date
+  entityId?: string | null;
+  accountId: string; // Account used for balance
+  concept: string;
+  currency: Currency;
+  type: ProjectedIncomeType;
+  rateEA?: number; // Percent (12 = 12% EA)
+  rateMonthly?: number; // Percent (2 = 2% mensual)
+  amount?: number; // Used for salary
+  isRecurring?: boolean;
   notes?: string;
 }

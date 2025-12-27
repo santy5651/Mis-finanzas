@@ -27,35 +27,44 @@ export function DebtForm({ onSuccess, defaultValues }: DebtFormProps) {
     // Fetch entities (Banks, People, etc.)
     const entities = useLiveQuery(() => db.entities.toArray()) || [];
     const debtTypes = debtTypeSchema.options;
+    const getDebtTypeLabel = (type: string) => {
+        if (type === 'CREDIT_CARD') return 'Tarjeta de Credito';
+        if (type === 'PERSONAL') return 'Personal';
+        if (type === 'LOAN') return 'Prestamo';
+        return 'Otro';
+    };
 
+    const newId = defaultValues?.id ?? uuidv4();
     const form = useForm<DebtFormValues>({
         resolver: zodResolver(debtSchema),
         defaultValues: {
-            id: defaultValues?.id ?? uuidv4(),
+            id: newId,
+            seriesId: defaultValues?.seriesId ?? newId,
             periodId: defaultValues?.periodId ?? periodId,
             entityId: defaultValues?.entityId ?? '',
             debtType: defaultValues?.debtType ?? 'CREDIT_CARD',
             amount: defaultValues?.amount ?? 0,
+            amortizationAmount: defaultValues?.amortizationAmount ?? 0,
             currency: defaultValues?.currency ?? 'COP',
-            dueDate: defaultValues?.dueDate ?? '',
+            dueDay: defaultValues?.dueDay ?? undefined,
             notes: defaultValues?.notes ?? '',
         }
     });
 
     async function onSubmit(data: DebtFormValues) {
         try {
-            await db.debts.put({
-                ...data,
-                dueDate: data.dueDate || undefined // Ensure undefined if empty string
-            });
+            await db.debts.put(data);
+            const resetId = uuidv4();
             form.reset({
-                id: uuidv4(),
+                id: resetId,
+                seriesId: resetId,
                 periodId: periodId,
                 entityId: '',
                 debtType: 'CREDIT_CARD',
                 amount: 0,
+                amortizationAmount: 0,
                 currency: 'COP',
-                dueDate: '',
+                dueDay: undefined,
                 notes: '',
             });
             onSuccess?.();
@@ -110,7 +119,7 @@ export function DebtForm({ onSuccess, defaultValues }: DebtFormProps) {
                                     <SelectContent>
                                         {debtTypes.map(t => (
                                             <SelectItem key={t} value={t}>
-                                                {t.replace(/_/g, ' ')}
+                                                {getDebtTypeLabel(t)}
                                             </SelectItem>
                                         ))}
                                     </SelectContent>
@@ -128,6 +137,23 @@ export function DebtForm({ onSuccess, defaultValues }: DebtFormProps) {
                         render={({ field }) => (
                             <FormItem>
                                 <FormLabel>Monto a Pagar</FormLabel>
+                                <FormControl>
+                                    <Input
+                                        type="number"
+                                        {...field}
+                                        onChange={e => field.onChange(e.target.valueAsNumber)}
+                                    />
+                                </FormControl>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                    <FormField
+                        control={form.control}
+                        name="amortizationAmount"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Amortizacion del Mes</FormLabel>
                                 <FormControl>
                                     <Input
                                         type="number"
@@ -165,12 +191,19 @@ export function DebtForm({ onSuccess, defaultValues }: DebtFormProps) {
 
                 <FormField
                     control={form.control}
-                    name="dueDate"
+                    name="dueDay"
                     render={({ field }) => (
                         <FormItem>
-                            <FormLabel>Fecha Límite (Opcional)</FormLabel>
+                            <FormLabel>Dia de Vencimiento (Opcional)</FormLabel>
                             <FormControl>
-                                <Input type="date" {...field} value={field.value || ''} />
+                                <Input
+                                    type="number"
+                                    min="1"
+                                    max="31"
+                                    {...field}
+                                    value={field.value ?? ''}
+                                    onChange={e => field.onChange(e.target.valueAsNumber || undefined)}
+                                />
                             </FormControl>
                             <FormMessage />
                         </FormItem>
