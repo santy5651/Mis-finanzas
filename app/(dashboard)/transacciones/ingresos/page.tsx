@@ -1,162 +1,139 @@
-
 'use client';
 
-import { useActivePeriod } from '@/lib/hooks/use-active-period';
+import { useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { format, parse, subMonths } from 'date-fns';
+import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { db } from '@/lib/db/db';
-import { IncomeForm } from '@/components/forms/income-form';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Plus } from 'lucide-react';
-import { useState } from 'react';
-import { DeleteButton } from '@/components/ui/delete-button';
-
-import { EditButton } from '@/components/ui/edit-button';
-import { Income } from '@/lib/db/db';
-import { CopyIncomesButton } from '@/components/dashboard/copy-incomes-button';
-import { InlineAmount } from '@/components/ui/inline-amount';
 import { PeriodSelector } from '@/components/dashboard/period-selector';
 import { formatMoney } from '@/lib/utils';
 import { toCOP } from '@/lib/calculations/financials';
 
 export default function IncomesPage() {
     const { periodId } = useActivePeriod();
-    const [open, setOpen] = useState(false);
-    const [editingItem, setEditingItem] = useState<Income | null>(null);
 
-    const incomes = useLiveQuery(async () => {
-        const perIncomes = await db.incomes.where('periodId').equals(periodId).toArray();
-        const entities = await db.entities.toArray();
-        const entMap = new Map(entities.map(e => [e.id, e]));
-        return perIncomes.map(inc => ({
-            ...inc,
-            entityName: inc.entityId ? entMap.get(inc.entityId)?.name || 'Desconocida' : 'Ninguna'
-        }));
+    const accounts = useLiveQuery(() => db.accounts.filter(a => a.isActive).toArray()) || [];
+    const entities = useLiveQuery(() => db.entities.toArray()) || [];
+
+    const prevPeriodId = useMemo(() => {
+        if (!periodId) return null;
+        const currentDate = parse(periodId, 'yyyy-MM', new Date());
+        return format(subMonths(currentDate, 1), 'yyyy-MM');
     }, [periodId]);
+
+    const snapshots = useLiveQuery(() => {
+        if (!periodId || !prevPeriodId) return [];
+        return db.accountSnapshots.where('periodId').anyOf([periodId, prevPeriodId]).toArray();
+    }, [periodId, prevPeriodId]) || [];
+
+    const movements = useLiveQuery(() => {
+        if (!periodId) return [];
+        return db.accountMovements.where('periodId').equals(periodId).toArray();
+    }, [periodId]) || [];
 
     const period = useLiveQuery(() => db.periods.get(periodId), [periodId]);
     const safePeriod = period || { id: periodId, year: 0, month: 0, usdCopRate: null };
-    const totalIncome = incomes?.reduce((sum, inc) => sum + toCOP(inc.amount, inc.currency, safePeriod), 0) || 0;
 
-    const handleOpenChange = (isOpen: boolean) => {
-        setOpen(isOpen);
-        if (!isOpen) setEditingItem(null); // Reset on close
-    };
+    const calculatedRows = useMemo(() => {
+        if (!periodId || !prevPeriodId) return [];
+        const entityMap = new Map(entities.map(e => [e.id, e.name]));
+        const snapshotMap = new Map(snapshots.filter(s => s.periodId === periodId).map(s => [s.accountId, s]));
+        const prevSnapshotMap = new Map(snapshots.filter(s => s.periodId === prevPeriodId).map(s => [s.accountId, s]));
+        const movementTotals = new Map<string, number>();
 
+        movements.forEach(movement => {
+            const sign = (movement.type === 'DEPOSIT' || movement.type === 'TRANSFER_IN') ? 1 : -1;
+            const prev = movementTotals.get(movement.accountId) ?? 0;
+            movementTotals.set(movement.accountId, prev + (sign * movement.amount));
+        });
 
+        return accounts.map(account => {
+            const currentSnap = snapshotMap.get(account.id);
+            const prevSnap = prevSnapshotMap.get(account.id);
+            if (!currentSnap || !prevSnap) return null;
+            const netFlow = movementTotals.get(account.id) ?? 0;
+            const adjustedReturn = (currentSnap.balance - prevSnap.balance) - netFlow;
+            if (adjustedReturn === 0) return null;
+            return {
+                accountId: account.id,
+                accountName: account.name,
+                entityName: entityMap.get(account.entityId) || 'Sin Entidad',
+                currency: account.currency,
+                amount: adjustedReturn
+            };
+        }).filter(Boolean) as Array<{
+            accountId: string;
+            accountName: string;
+            entityName: string;
+            currency: 'COP' | 'USD';
+            amount: number;
+        }>;
+    }, [accounts, entities, movements, periodId, prevPeriodId, snapshots]);
 
-    // ... (imports)
-
-    const handleEdit = (income: Income) => {
-        setEditingItem(income);
-        setOpen(true);
-    };
+    const totalCalculated = calculatedRows.reduce((sum, row) => {
+        return sum + toCOP(row.amount, row.currency, safePeriod);
+    }, 0);
 
     return (
         <div className="space-y-6">
             <div className="flex justify-between items-center">
                 <h1 className="text-3xl font-bold">Ingresos ({periodId})</h1>
-                <div className="flex gap-2">
-                    <PeriodSelector />
-                    <CopyIncomesButton />
-                    <Button
-                        variant="destructive"
-                        onClick={async () => {
-                            if (!confirm(`Eliminar todos los ingresos del periodo ${periodId}?`)) return;
-                            await db.incomes.where('periodId').equals(periodId).delete();
-                        }}
-                    >
-                        Borrar Todo
-                    </Button>
-                    <Dialog open={open} onOpenChange={handleOpenChange}>
-                        <DialogTrigger asChild>
-                            <Button onClick={() => setEditingItem(null)}><Plus className="mr-2 h-4 w-4" /> Nuevo Ingreso</Button>
-                        </DialogTrigger>
-                        <DialogContent>
-                            <DialogHeader>
-                                <DialogTitle>{editingItem ? 'Editar Ingreso' : 'Registrar Ingreso'}</DialogTitle>
-                            </DialogHeader>
-                            <IncomeForm
-                                onSuccess={() => setOpen(false)}
-                                defaultValues={editingItem ? {
-                                    ...editingItem,
-                                    entityId: editingItem.entityId ?? undefined,
-                                    notes: editingItem.notes ?? undefined
-                                } : undefined}
-                            />
-                        </DialogContent>
-                    </Dialog>
-                </div>
+                <PeriodSelector />
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                        <CardTitle className="text-sm font-medium">Total Ingresos</CardTitle>
+                        <CardTitle className="text-sm font-medium">Ingresos Calculados</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold">
-                            ${formatMoney(totalIncome)} COP
+                            ${formatMoney(totalCalculated)} COP
                         </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                            Calculados con la diferencia entre el mes anterior y el mes actual.
+                        </p>
                     </CardContent>
                 </Card>
             </div>
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Listado de Ingresos</CardTitle>
+                    <CardTitle>Ingresos Calculados</CardTitle>
                 </CardHeader>
                 <CardContent>
                     <Table>
                         <TableHeader>
                             <TableRow>
-                                <TableHead>Fecha</TableHead>
-                                <TableHead>Concepto</TableHead>
+                                <TableHead>Cuenta</TableHead>
                                 <TableHead>Entidad</TableHead>
                                 <TableHead>Monto</TableHead>
                                 <TableHead>Moneda</TableHead>
-                                <TableHead>Tipo</TableHead>
-                                <TableHead className="w-[100px]"></TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {incomes?.length === 0 && (
+                            {calculatedRows.length === 0 && (
                                 <TableRow>
-                                <TableCell colSpan={7} className="text-center text-muted-foreground">
-                                    No hay ingresos registrados en este periodo.
-                                </TableCell>
-                            </TableRow>
-                        )}
-                        {incomes?.map((income) => (
-
-
-                                // ... (in component)
-                                <TableRow key={income.id}>
-                                    <TableCell>{income.date}</TableCell>
-                                    <TableCell>{income.concept}</TableCell>
-                                    <TableCell>{income.entityName}</TableCell>
-                                    <TableCell>
-                                        <InlineAmount
-                                            value={income.amount}
-                                            currency={income.currency}
-                                            onSave={async (val) => {
-                                                await db.incomes.update(income.id, { amount: val });
-                                            }}
-                                        />
-                                    </TableCell>
-                                    <TableCell>{income.currency}</TableCell>
-                                    <TableCell>{income.isSalary ? 'Salario' : 'Extra'}</TableCell>
-                                    <TableCell className="flex gap-1">
-                                        <EditButton onClick={() => handleEdit(income)} />
-                                        <DeleteButton
-                                            onDelete={() => db.incomes.delete(income.id)}
-                                            itemName="ingreso"
-                                        />
+                                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                                        No hay ingresos calculados para este periodo.
                                     </TableCell>
                                 </TableRow>
-                            ))}
+                            )}
+                            {calculatedRows.map((row) => {
+                                const amountColor = row.amount >= 0 ? 'text-green-600' : 'text-red-600';
+                                return (
+                                    <TableRow key={row.accountId}>
+                                        <TableCell>{row.accountName}</TableCell>
+                                        <TableCell>{row.entityName}</TableCell>
+                                        <TableCell className={amountColor}>
+                                            ${formatMoney(row.amount, row.currency)}
+                                        </TableCell>
+                                        <TableCell>{row.currency}</TableCell>
+                                    </TableRow>
+                                );
+                            })}
                         </TableBody>
                     </Table>
                 </CardContent>

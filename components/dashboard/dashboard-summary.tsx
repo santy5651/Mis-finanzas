@@ -16,22 +16,39 @@ import { subMonths, parse, format } from 'date-fns';
 import { Loader2, TrendingUp, TrendingDown, DollarSign, Wallet, CreditCard, PiggyBank, Briefcase } from 'lucide-react';
 import { formatMoney } from '@/lib/utils';
 
-function calculateProjectedIncomeAmount(item: any, balance: number) {
-    if (item.type === 'SALARY') {
-        return item.amount ?? 0;
+function calculateSnapshotProjectedAmount(snapshot: any) {
+    const type = snapshot.projectedIncomeType ?? (snapshot.effectiveAnnualRateProjected ? 'FIXED_EA' : null);
+    if (!type) return { amount: 0, type: null };
+    if (type === 'SALARY' || type === 'ONE_TIME') {
+        return { amount: snapshot.projectedAmount ?? 0, type };
     }
-    if (item.type === 'FIXED_EA') {
-        const ea = item.rateEA ?? 0;
-        const monthlyRate = Math.pow(1 + (ea / 100), 1 / 12) - 1;
-        return balance * monthlyRate;
+    if (type === 'FIXED_EA') {
+        const ea = snapshot.effectiveAnnualRateProjected ?? 0;
+        const monthlyRate = Math.pow(1 + ea, 1 / 12) - 1;
+        return { amount: snapshot.balance * monthlyRate, type };
     }
-    const monthly = item.rateMonthly ?? 0;
-    return balance * (monthly / 100);
+    const monthly = snapshot.projectedRateMonthly ?? 0;
+    return { amount: snapshot.balance * (monthly / 100), type };
+}
+
+function calculateSnapshotProjectedReturnOnly(snapshot: any) {
+    const type = snapshot.projectedIncomeType ?? (snapshot.effectiveAnnualRateProjected ? 'FIXED_EA' : null);
+    if (!type) return 0;
+    if (type === 'FIXED_EA') {
+        const ea = snapshot.effectiveAnnualRateProjected ?? 0;
+        const monthlyRate = Math.pow(1 + ea, 1 / 12) - 1;
+        return snapshot.balance * monthlyRate;
+    }
+    if (type === 'VARIABLE_MONTHLY') {
+        const monthly = snapshot.projectedRateMonthly ?? 0;
+        return snapshot.balance * (monthly / 100);
+    }
+    return 0;
 }
 
 export function DashboardSummary() {
     const { periodId } = useActivePeriod();
-    const [sortKey, setSortKey] = useState<'accountName' | 'entityName' | 'balance' | 'prevBalance' | 'balanceDiff' | 'projected' | 'real' | 'diff' | 'diffPct'>('accountName');
+    const [sortKey, setSortKey] = useState<'accountName' | 'entityName' | 'balance' | 'prevBalance' | 'balanceDiff' | 'balanceDiffPct' | 'projected' | 'real' | 'diff' | 'diffPct'>('accountName');
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
     const [showReturns, setShowReturns] = useState(true);
     const [expandReturns, setExpandReturns] = useState(false);
@@ -63,8 +80,10 @@ export function DashboardSummary() {
             prevDebts,
             prevPrevDebts,
             entities,
-            projectedIncomes,
-            prevProjectedIncomes
+            accountMovements,
+            prevAccountMovements,
+            projectedIncomeItems,
+            prevProjectedIncomeItems
         ] = await Promise.all([
             db.accounts.filter(a => a.isActive).toArray(),
             db.accountSnapshots.where('periodId').equals(periodId).toArray(),
@@ -78,8 +97,10 @@ export function DashboardSummary() {
             db.debts.where('periodId').equals(prevPeriodId).toArray(),
             db.debts.where('periodId').equals(prevPrevPeriodId).toArray(),
             db.entities.toArray(),
-            db.projectedIncomes.where('periodId').equals(periodId).toArray(),
-            db.projectedIncomes.where('periodId').equals(prevPeriodId).toArray()
+            db.accountMovements.where('periodId').equals(periodId).toArray(),
+            db.accountMovements.where('periodId').equals(prevPeriodId).toArray(),
+            db.projectedIncomeItems.where('periodId').equals(periodId).toArray(),
+            db.projectedIncomeItems.where('periodId').equals(prevPeriodId).toArray()
         ]);
 
         const summary = calculatePeriodSummary(
@@ -90,7 +111,8 @@ export function DashboardSummary() {
             prevDebts,
             accounts,
             snapshots,
-            prevSnapshots
+            prevSnapshots,
+            accountMovements
         );
 
         const prevSummary = calculatePeriodSummary(
@@ -101,18 +123,25 @@ export function DashboardSummary() {
             prevPrevDebts,
             accounts,
             prevSnapshots,
-            prevPrevSnapshots
+            prevPrevSnapshots,
+            prevAccountMovements
         );
 
         const entityMap = new Map(entities.map(e => [e.id, e.name]));
         const prevSnapMap = new Map(prevSnapshots.map(s => [s.accountId, s]));
 
-        const snapMap = new Map(snapshots.map(s => [s.accountId, s]));
+        const movementTotalsByAccount = new Map<string, number>();
+        accountMovements.forEach(movement => {
+            const sign = (movement.type === 'DEPOSIT' || movement.type === 'TRANSFER_IN') ? 1 : -1;
+            const prev = movementTotalsByAccount.get(movement.accountId) ?? 0;
+            movementTotalsByAccount.set(movement.accountId, prev + (sign * movement.amount));
+        });
         const rows = snapshots.map(snap => {
             const account = accounts.find(acc => acc.id === snap.accountId);
             if (!account) return null;
             const prev = prevSnapMap.get(snap.accountId);
-            const real = calculateRealReturn(snap.balance, prev?.balance).realMonthlyReturn;
+            const netFlow = movementTotalsByAccount.get(snap.accountId) ?? 0;
+            const real = calculateRealReturn(snap.balance, prev?.balance, netFlow).realMonthlyReturn;
             const projected = snap.effectiveAnnualRateProjected
                 ? calculateProjectedReturn(snap.balance, snap.effectiveAnnualRateProjected).projectedMonthlyReturn
                 : 0;
@@ -139,6 +168,7 @@ export function DashboardSummary() {
             const balanceDiff = balanceCop - prevBalanceCop;
             const diff = realCop - projCop;
             const diffPct = projCop !== 0 ? (diff / Math.abs(projCop)) * 100 : null;
+            const balanceDiffPct = prevBalanceCop !== 0 ? (balanceDiff / Math.abs(prevBalanceCop)) * 100 : null;
 
             return {
                 id: account.id,
@@ -150,26 +180,56 @@ export function DashboardSummary() {
                 real: realCop,
                 projected: projCop,
                 diff,
-                diffPct
+                diffPct,
+                balanceDiffPct
             };
         }).filter(Boolean);
 
-        const prevProjectedIncrease = prevSummary.incomeNonSalaryProjected + prevSummary.balance;
-        const actualIncreaseThis = summary.capitalTotal - prevSummary.capitalTotal;
-        const projectionDelta = actualIncreaseThis - prevProjectedIncrease;
-        const projectedIncomeTotal = projectedIncomes.reduce((sum, item) => {
-            const account = accounts.find(acc => acc.id === item.accountId);
-            const balance = snapMap.get(item.accountId)?.balance ?? 0;
+        const projectedNonSalary = snapshots.reduce((sum, snap) => {
+            const account = accounts.find(acc => acc.id === snap.accountId);
             if (!account) return sum;
-            const amount = calculateProjectedIncomeAmount(item, balance);
+            const amount = calculateSnapshotProjectedReturnOnly(snap);
             return sum + toCOP(amount, account.currency, safePeriod);
         }, 0);
-        const prevProjectedIncomeTotal = prevProjectedIncomes.reduce((sum, item) => {
-            const account = accounts.find(acc => acc.id === item.accountId);
-            const balance = prevSnapMap.get(item.accountId)?.balance ?? 0;
+
+        const prevProjectedNonSalary = prevSnapshots.reduce((sum, snap) => {
+            const account = accounts.find(acc => acc.id === snap.accountId);
             if (!account) return sum;
-            const amount = calculateProjectedIncomeAmount(item, balance);
+            const amount = calculateSnapshotProjectedReturnOnly(snap);
             return sum + toCOP(amount, account.currency, safePrevPeriod);
+        }, 0);
+
+        const prevProjectedIncrease = prevProjectedNonSalary + prevSummary.balance;
+        const actualIncreaseThis = summary.capitalTotal - prevSummary.capitalTotal;
+        const projectionDelta = actualIncreaseThis - prevProjectedIncrease;
+        const projectedIncomeBreakdown = snapshots.reduce((acc, snap) => {
+            const account = accounts.find(acc => acc.id === snap.accountId);
+            if (!account) return acc;
+            const { amount, type } = calculateSnapshotProjectedAmount(snap);
+            const amountCop = toCOP(amount, account.currency, safePeriod);
+            if (type === 'SALARY') {
+                acc.salary += amountCop;
+            } else {
+                acc.nonSalary += amountCop;
+            }
+            return acc;
+        }, { salary: 0, nonSalary: 0 });
+        projectedIncomeItems.forEach(item => {
+            const amountCop = toCOP(item.amount, item.currency, safePeriod);
+            if (item.type === 'SALARY') {
+                projectedIncomeBreakdown.salary += amountCop;
+            } else {
+                projectedIncomeBreakdown.nonSalary += amountCop;
+            }
+        });
+        const projectedIncomeTotal = projectedIncomeBreakdown.salary + projectedIncomeBreakdown.nonSalary;
+        const prevProjectedIncomeTotal = prevSnapshots.reduce((sum, snap) => {
+            const account = accounts.find(acc => acc.id === snap.accountId);
+            if (!account) return sum;
+            const { amount } = calculateSnapshotProjectedAmount(snap);
+            return sum + toCOP(amount, account.currency, safePrevPeriod);
+        }, 0) + prevProjectedIncomeItems.reduce((sum, item) => {
+            return sum + toCOP(item.amount, item.currency, safePrevPeriod);
         }, 0);
 
         return {
@@ -180,6 +240,9 @@ export function DashboardSummary() {
             actualIncreaseThis,
             projectionDelta,
             projectedIncomeTotal,
+            projectedIncomeSalaryTotal: projectedIncomeBreakdown.salary,
+            projectedIncomeNonSalaryTotal: projectedIncomeBreakdown.nonSalary,
+            projectedNonSalary,
             prevProjectedIncomeTotal
         };
     }, [periodId]);
@@ -223,6 +286,7 @@ export function DashboardSummary() {
     }
 
     const projectedIncomeNet = data.projectedIncomeTotal;
+    const projectedIncomeDescription = `Salariales: $${formatMoney(data.projectedIncomeSalaryTotal)} | No salariales: $${formatMoney(data.projectedIncomeNonSalaryTotal)}`;
     const projectedCapitalNext = data.summary.capitalTotal + projectedIncomeNet - data.summary.expensesTotal;
     const deltaColor = data.projectionDelta >= 0 ? 'text-green-600' : 'text-red-600';
     const realIncome = data.actualIncreaseThis;
@@ -250,7 +314,7 @@ export function DashboardSummary() {
                         value={projectedIncomeNet}
                         icon={TrendingUp}
                         formula="Suma de ingresos proyectados del mes"
-                        description="Ingreso esperado del mes"
+                        description={projectedIncomeDescription}
                         color="text-blue-600"
                     />
                     <SummaryCard
@@ -354,14 +418,14 @@ export function DashboardSummary() {
                     </CardContent>
                 </Card>
 
-                {(data.summary.incomeNonSalaryProjected > 0) && (
+                {(data.projectedNonSalary > 0) && (
                     <Card>
                         <CardHeader className="pb-2">
                             <CardTitle className="text-sm font-medium">Proyeccion de Rendimientos</CardTitle>
                         </CardHeader>
                         <CardContent>
                             <div className="text-2xl font-bold text-blue-700">
-                                ${formatMoney(data.summary.incomeNonSalaryProjected)}
+                                ${formatMoney(data.projectedNonSalary)}
                             </div>
                             <p className="text-xs text-muted-foreground mt-1">
                                 Rendimientos estimados del mes actual
@@ -424,6 +488,11 @@ export function DashboardSummary() {
                                             </button>
                                         </TableHead>
                                         <TableHead className="whitespace-normal">
+                                            <button type="button" onClick={() => toggleSort('balanceDiffPct')}>
+                                                Crecimiento real %{sortIndicator('balanceDiffPct')}
+                                            </button>
+                                        </TableHead>
+                                        <TableHead className="whitespace-normal">
                                             <button type="button" onClick={() => toggleSort('projected')}>
                                                 Proyectado (COP){sortIndicator('projected')}
                                             </button>
@@ -458,6 +527,7 @@ export function DashboardSummary() {
                                         const diffColor = diffValue >= 0 ? 'text-green-600' : 'text-red-600';
                                         const balanceDiffValue = row.balanceDiff ?? 0;
                                         const balanceDiffColor = balanceDiffValue >= 0 ? 'text-green-600' : 'text-red-600';
+                                        const balanceDiffPctValue = row.balanceDiffPct === null ? '-' : `${row.balanceDiffPct.toFixed(1)}%`;
                                         const pct = row.diffPct === null ? '-' : `${row.diffPct.toFixed(1)}%`;
                                         return (
                                             <TableRow key={row.id}>
@@ -467,6 +537,9 @@ export function DashboardSummary() {
                                                 <TableCell>{row.prevBalance === null ? 'Sin TRM' : `$${formatMoney(row.prevBalance)}`}</TableCell>
                                                 <TableCell className={balanceDiffColor}>
                                                     {row.balanceDiff === null ? '-' : `$${formatMoney(row.balanceDiff)}`}
+                                                </TableCell>
+                                                <TableCell className={balanceDiffColor}>
+                                                    {row.balanceDiffPct === null ? '-' : balanceDiffPctValue}
                                                 </TableCell>
                                                 <TableCell>{row.projected === null ? 'Sin TRM' : `$${formatMoney(row.projected)}`}</TableCell>
                                                 <TableCell>{row.real === null ? 'Sin TRM' : `$${formatMoney(row.real)}`}</TableCell>

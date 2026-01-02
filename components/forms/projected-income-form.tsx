@@ -67,7 +67,9 @@ export function ProjectedIncomeForm({ onSuccess, defaultValues }: ProjectedIncom
     const monthlyRateFromEA = Math.pow(1 + (rateEA / 100), 1 / 12) - 1;
     const monthlyRate = selectedType === 'FIXED_EA' ? monthlyRateFromEA : (rateMonthly / 100);
     const manualAmount = form.watch('amount') || 0;
-    const projectedAmount = selectedType === 'SALARY' ? manualAmount : snapshotBalance * monthlyRate;
+    const projectedAmount = (selectedType === 'SALARY' || selectedType === 'ONE_TIME')
+        ? manualAmount
+        : snapshotBalance * monthlyRate;
 
     async function onSubmit(data: ProjectedIncomeFormValues) {
         try {
@@ -274,13 +276,13 @@ export function ProjectedIncomeForm({ onSuccess, defaultValues }: ProjectedIncom
                     />
                 )}
 
-                {selectedType === 'SALARY' && (
+                {(selectedType === 'SALARY' || selectedType === 'ONE_TIME') && (
                     <FormField
                         control={form.control}
                         name="amount"
                         render={({ field }) => (
                             <FormItem>
-                                <FormLabel>Salario Proyectado</FormLabel>
+                                <FormLabel>{selectedType === 'SALARY' ? 'Salario Proyectado' : 'Monto Proyectado'}</FormLabel>
                                 <FormControl>
                                     <Input type="number" step="any" {...field} onChange={e => field.onChange(e.target.valueAsNumber)} />
                                 </FormControl>

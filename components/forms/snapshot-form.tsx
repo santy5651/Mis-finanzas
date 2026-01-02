@@ -12,10 +12,13 @@ import { Form, FormControl, FormField, FormItem, FormMessage } from '@/component
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { v4 as uuidv4 } from 'uuid';
 import { GripVertical, Loader2, Save } from 'lucide-react';
 import { LIQUID_CATEGORIES } from '@/lib/calculations/financials';
 import { formatMoney } from '@/lib/utils';
+import { DeleteButton } from '@/components/ui/delete-button';
+import type { AccountMovement } from '@/lib/types';
 
 const snapshotEntrySchema = z.object({
     accountId: z.string(),
@@ -37,6 +40,13 @@ export function SnapshotForm() {
     const [dragIndex, setDragIndex] = useState<number | null>(null);
     const [balanceInputs, setBalanceInputs] = useState<Record<string, string>>({});
     const [rateInputs, setRateInputs] = useState<Record<string, string>>({});
+    const [movementDialogOpen, setMovementDialogOpen] = useState(false);
+    const [movementAccountId, setMovementAccountId] = useState<string | null>(null);
+    const [movementType, setMovementType] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER'>('DEPOSIT');
+    const [movementDate, setMovementDate] = useState('');
+    const [movementAmount, setMovementAmount] = useState('');
+    const [movementNotes, setMovementNotes] = useState('');
+    const [transferAccountId, setTransferAccountId] = useState<string>('');
 
     const accounts = useLiveQuery(() =>
         db.accounts.filter(a => a.isActive).toArray()
@@ -68,6 +78,17 @@ export function SnapshotForm() {
     });
 
     const selectedPeriod = form.watch('periodId');
+    const movementAccount = accounts.find(account => account.id === movementAccountId);
+    const movements = useLiveQuery(() => {
+        if (!movementAccountId || !selectedPeriod) return [];
+        return db.accountMovements
+            .where('[periodId+accountId]')
+            .equals([selectedPeriod, movementAccountId])
+            .toArray();
+    }, [movementAccountId, selectedPeriod]) || [];
+    const transferTargets = movementAccount
+        ? accounts.filter(account => account.id !== movementAccount.id && account.currency === movementAccount.currency)
+        : [];
 
     useEffect(() => {
         const loadData = async () => {
@@ -139,6 +160,109 @@ export function SnapshotForm() {
         const normalized = value.replace(',', '.');
         const parsed = parseFloat(normalized);
         return Number.isNaN(parsed) ? 0 : parsed;
+    };
+
+    useEffect(() => {
+        if (!movementDialogOpen || !selectedPeriod) return;
+        setMovementType('DEPOSIT');
+        setMovementAmount('');
+        setMovementNotes('');
+        setTransferAccountId('');
+        setMovementDate(`${selectedPeriod}-01`);
+    }, [movementDialogOpen, selectedPeriod]);
+
+    const applyBalanceDelta = (accountId: string, delta: number) => {
+        const snapshotsValues = form.getValues('snapshots');
+        const index = snapshotsValues.findIndex(snap => snap.accountId === accountId);
+        if (index === -1) return;
+        const current = form.getValues(`snapshots.${index}.balance`);
+        const next = current + delta;
+        form.setValue(`snapshots.${index}.balance`, next);
+        setBalanceInputs(prev => ({ ...prev, [accountId]: formatDecimal(next) }));
+    };
+
+    const handleAddMovement = async () => {
+        if (!movementAccount || !movementAccountId || !selectedPeriod) return;
+        const amount = parseDecimal(movementAmount);
+        if (!movementDate || amount <= 0) {
+            alert('Ingresa una fecha y un monto valido.');
+            return;
+        }
+
+        const createdAt = new Date().toISOString();
+        const baseMovement = {
+            periodId: selectedPeriod,
+            date: movementDate,
+            amount,
+            currency: movementAccount.currency,
+            notes: movementNotes || undefined,
+            createdAt
+        };
+
+        if (movementType === 'TRANSFER') {
+            if (!transferAccountId) {
+                alert('Selecciona la cuenta destino para la transferencia.');
+                return;
+            }
+            const targetAccount = accounts.find(account => account.id === transferAccountId);
+            if (!targetAccount) {
+                alert('Cuenta destino invalida.');
+                return;
+            }
+            const transferGroupId = uuidv4();
+            const outgoing: AccountMovement = {
+                id: uuidv4(),
+                accountId: movementAccount.id,
+                type: 'TRANSFER_OUT',
+                relatedAccountId: targetAccount.id,
+                transferGroupId,
+                ...baseMovement
+            };
+            const incoming: AccountMovement = {
+                id: uuidv4(),
+                accountId: targetAccount.id,
+                type: 'TRANSFER_IN',
+                relatedAccountId: movementAccount.id,
+                transferGroupId,
+                ...baseMovement
+            };
+            await db.accountMovements.bulkAdd([outgoing, incoming]);
+            applyBalanceDelta(movementAccount.id, -amount);
+            applyBalanceDelta(targetAccount.id, amount);
+        } else {
+            const type = movementType === 'DEPOSIT' ? 'DEPOSIT' : 'WITHDRAWAL';
+            const movement: AccountMovement = {
+                id: uuidv4(),
+                accountId: movementAccount.id,
+                type,
+                ...baseMovement
+            };
+            await db.accountMovements.add(movement);
+            const delta = type === 'DEPOSIT' ? amount : -amount;
+            applyBalanceDelta(movementAccount.id, delta);
+        }
+
+        setMovementAmount('');
+        setMovementNotes('');
+        setTransferAccountId('');
+    };
+
+    const handleDeleteMovement = async (movement: AccountMovement) => {
+        const reverseDelta = (type: AccountMovement['type'], amount: number) => {
+            return (type === 'DEPOSIT' || type === 'TRANSFER_IN') ? -amount : amount;
+        };
+
+        if (movement.transferGroupId) {
+            const groupMovements = await db.accountMovements
+                .where('transferGroupId')
+                .equals(movement.transferGroupId)
+                .toArray();
+            await db.accountMovements.where('transferGroupId').equals(movement.transferGroupId).delete();
+            groupMovements.forEach(item => applyBalanceDelta(item.accountId, reverseDelta(item.type, item.amount)));
+        } else {
+            await db.accountMovements.delete(movement.id);
+            applyBalanceDelta(movement.accountId, reverseDelta(movement.type, movement.amount));
+        }
     };
 
     async function onSubmit(data: SnapshotFormValues) {
@@ -238,6 +362,7 @@ export function SnapshotForm() {
                                 <TableHead>Moneda</TableHead>
                                 <TableHead>Saldo Actual</TableHead>
                                 <TableHead>% E.A. Proyectado</TableHead>
+                                <TableHead>Movimientos</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -330,11 +455,24 @@ export function SnapshotForm() {
                                             )}
                                         />
                                     </TableCell>
+                                    <TableCell>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => {
+                                                setMovementAccountId(field.accountId);
+                                                setMovementDialogOpen(true);
+                                            }}
+                                        >
+                                            Ver
+                                        </Button>
+                                    </TableCell>
                                 </TableRow>
                             ))}
                             {fields.length === 0 && (
                                 <TableRow>
-                                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                                         No hay cuentas activas registradas. Ve a la seccion de Cuentas para crear una.
                                     </TableCell>
                                 </TableRow>
@@ -342,6 +480,143 @@ export function SnapshotForm() {
                         </TableBody>
                     </Table>
                 </div>
+
+                <Dialog
+                    open={movementDialogOpen}
+                    onOpenChange={(open) => {
+                        setMovementDialogOpen(open);
+                        if (!open) {
+                            setMovementAccountId(null);
+                        }
+                    }}
+                >
+                    <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                        <DialogHeader>
+                            <DialogTitle>
+                                Movimientos {movementAccount ? `- ${movementAccount.name}` : ''}
+                            </DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-4">
+                            <div className="grid gap-3 md:grid-cols-2">
+                                <div className="space-y-1">
+                                    <label className="text-xs text-muted-foreground">Fecha</label>
+                                    <Input
+                                        type="date"
+                                        value={movementDate}
+                                        onChange={(event) => setMovementDate(event.target.value)}
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs text-muted-foreground">Tipo</label>
+                                    <Select value={movementType} onValueChange={(val) => setMovementType(val as typeof movementType)}>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Tipo" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="DEPOSIT">Deposito</SelectItem>
+                                            <SelectItem value="WITHDRAWAL">Retiro</SelectItem>
+                                            <SelectItem value="TRANSFER">Transferencia</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs text-muted-foreground">Monto</label>
+                                    <Input
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={movementAmount}
+                                        onChange={(event) => setMovementAmount(normalizeDecimal(event.target.value))}
+                                    />
+                                </div>
+                                <div className="space-y-1 md:col-span-2">
+                                    <label className="text-xs text-muted-foreground">Notas</label>
+                                    <Input
+                                        type="text"
+                                        value={movementNotes}
+                                        onChange={(event) => setMovementNotes(event.target.value)}
+                                    />
+                                </div>
+                            </div>
+
+                            {movementType === 'TRANSFER' && (
+                                <div className="space-y-1">
+                                    <label className="text-xs text-muted-foreground">Cuenta destino</label>
+                                    <Select value={transferAccountId} onValueChange={setTransferAccountId}>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Selecciona una cuenta" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {transferTargets.map(account => (
+                                                <SelectItem key={account.id} value={account.id}>
+                                                    {account.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
+
+                            <div className="flex justify-end">
+                                <Button type="button" onClick={handleAddMovement}>
+                                    Agregar Movimiento
+                                </Button>
+                            </div>
+
+                            <div className="rounded-md border">
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>Fecha</TableHead>
+                                            <TableHead>Tipo</TableHead>
+                                            <TableHead>Monto</TableHead>
+                                            <TableHead>Notas</TableHead>
+                                            <TableHead className="w-[80px]"></TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {movements.length === 0 && (
+                                            <TableRow>
+                                                <TableCell colSpan={5} className="text-center text-muted-foreground">
+                                                    No hay movimientos registrados.
+                                                </TableCell>
+                                            </TableRow>
+                                        )}
+                                        {[...movements]
+                                            .sort((a, b) => a.date.localeCompare(b.date))
+                                            .map((movement) => {
+                                                const label = movement.type === 'DEPOSIT'
+                                                    ? 'Deposito'
+                                                    : movement.type === 'WITHDRAWAL'
+                                                        ? 'Retiro'
+                                                        : movement.type === 'TRANSFER_IN'
+                                                            ? 'Transferencia (Entrada)'
+                                                            : 'Transferencia (Salida)';
+                                                const amountColor = (movement.type === 'DEPOSIT' || movement.type === 'TRANSFER_IN')
+                                                    ? 'text-green-600'
+                                                    : 'text-red-600';
+                                                return (
+                                                    <TableRow key={movement.id}>
+                                                        <TableCell>{movement.date}</TableCell>
+                                                        <TableCell>{label}</TableCell>
+                                                        <TableCell className={amountColor}>
+                                                            ${formatMoney(movement.amount, movement.currency)}
+                                                        </TableCell>
+                                                        <TableCell>{movement.notes || '-'}</TableCell>
+                                                        <TableCell>
+                                                            <DeleteButton
+                                                                onDelete={() => handleDeleteMovement(movement)}
+                                                                itemName="movimiento"
+                                                            />
+                                                        </TableCell>
+                                                    </TableRow>
+                                                );
+                                            })}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                        </div>
+                    </DialogContent>
+                </Dialog>
             </form>
         </Form>
     );

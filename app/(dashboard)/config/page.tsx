@@ -44,7 +44,9 @@ export default function ConfigPage() {
                 accountSnapshots,
                 incomes,
                 expenses,
-                debts
+                debts,
+                projectedIncomeItems,
+                accountMovements
             ] = await Promise.all([
                 db.periods.toArray(),
                 db.entities.toArray(),
@@ -52,7 +54,9 @@ export default function ConfigPage() {
                 db.accountSnapshots.toArray(),
                 db.incomes.toArray(),
                 db.expenses.toArray(),
-                db.debts.toArray()
+                db.debts.toArray(),
+                db.projectedIncomeItems.toArray(),
+                db.accountMovements.toArray()
             ]);
 
             const payload = {
@@ -65,7 +69,9 @@ export default function ConfigPage() {
                     accountSnapshots,
                     incomes,
                     expenses,
-                    debts
+                    debts,
+                    projectedIncomeItems,
+                    accountMovements
                 }
             };
 
@@ -108,7 +114,9 @@ export default function ConfigPage() {
                 accountSnapshots = [],
                 incomes = [],
                 expenses = [],
-                debts = []
+                debts = [],
+                accountMovements = [],
+                projectedIncomeItems = []
             } = tables;
 
             await db.transaction(
@@ -120,6 +128,8 @@ export default function ConfigPage() {
                 db.incomes,
                 db.expenses,
                 db.debts,
+                db.accountMovements,
+                db.projectedIncomeItems,
                 async () => {
                     await Promise.all([
                         db.periods.clear(),
@@ -128,7 +138,9 @@ export default function ConfigPage() {
                         db.accountSnapshots.clear(),
                         db.incomes.clear(),
                         db.expenses.clear(),
-                        db.debts.clear()
+                        db.debts.clear(),
+                        db.accountMovements.clear(),
+                        db.projectedIncomeItems.clear()
                     ]);
 
                     await Promise.all([
@@ -138,7 +150,9 @@ export default function ConfigPage() {
                         db.accountSnapshots.bulkAdd(accountSnapshots),
                         db.incomes.bulkAdd(incomes),
                         db.expenses.bulkAdd(expenses),
-                        db.debts.bulkAdd(debts)
+                        db.debts.bulkAdd(debts),
+                        db.accountMovements.bulkAdd(accountMovements),
+                        db.projectedIncomeItems.bulkAdd(projectedIncomeItems)
                     ]);
                 }
             );
@@ -242,6 +256,8 @@ export default function ConfigPage() {
                                             db.incomes,
                                             db.expenses,
                                             db.debts,
+                                            db.accountMovements,
+                                            db.projectedIncomeItems,
                                             db.projectedIncomes,
                                             async () => {
                                                 await Promise.all([
@@ -252,6 +268,8 @@ export default function ConfigPage() {
                                                     db.incomes.clear(),
                                                     db.expenses.clear(),
                                                     db.debts.clear(),
+                                                    db.accountMovements.clear(),
+                                                    db.projectedIncomeItems.clear(),
                                                     db.projectedIncomes.clear()
                                                 ]);
                                             }

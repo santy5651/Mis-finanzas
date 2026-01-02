@@ -14,6 +14,7 @@ export type AccountCategory =
 export type ExpenseMethod = 'DEBIT' | 'CREDIT_CARD' | 'CASH' | 'TRANSFER' | 'OTHER';
 export type DebtType = 'CREDIT_CARD' | 'PERSONAL' | 'LOAN' | 'OTHER';
 export type ProjectedIncomeType = 'FIXED_EA' | 'VARIABLE_MONTHLY' | 'ONE_TIME' | 'SALARY';
+export type AccountMovementType = 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER_IN' | 'TRANSFER_OUT';
 
 export interface Period {
   id: string; // "YYYY-MM"
@@ -46,6 +47,10 @@ export interface AccountSnapshot {
   accountId: string; // FK Account
   balance: number; // Saldo final del mes
   effectiveAnnualRateProjected?: number; // E.A. (ej: 0.12 para 12%)
+  projectedIncomeType?: ProjectedIncomeType;
+  projectedRateMonthly?: number; // Percent (2 = 2% mensual)
+  projectedAmount?: number; // Used for salary or one-time
+  projectedConcept?: string;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -115,4 +120,30 @@ export interface ProjectedIncome {
   amount?: number; // Used for salary
   isRecurring?: boolean;
   notes?: string;
+}
+
+export interface ProjectedIncomeItem {
+  id: string; // UUID
+  periodId: string;
+  accountId: string;
+  type: 'SALARY' | 'ONE_TIME';
+  concept: string;
+  amount: number;
+  currency: Currency;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountMovement {
+  id: string; // UUID
+  periodId: string; // "YYYY-MM"
+  accountId: string; // FK Account
+  date: string; // ISO Date
+  type: AccountMovementType;
+  amount: number;
+  currency: Currency;
+  relatedAccountId?: string;
+  transferGroupId?: string;
+  notes?: string;
+  createdAt: string;
 }

@@ -64,17 +64,19 @@ function getNetDebtAmount(debt: Debt, period: Period) {
     return Math.max(0, toCOP(net, debt.currency, period));
 }
 
-function calculateProjectedIncomeAmount(item: any, balance: number) {
-    if (item.type === 'SALARY') {
-        return item.amount ?? 0;
+function calculateSnapshotProjectedAmount(snapshot: any) {
+    const type = snapshot.projectedIncomeType ?? (snapshot.effectiveAnnualRateProjected ? 'FIXED_EA' : null);
+    if (!type) return { amount: 0, type: null };
+    if (type === 'SALARY' || type === 'ONE_TIME') {
+        return { amount: snapshot.projectedAmount ?? 0, type };
     }
-    if (item.type === 'FIXED_EA') {
-        const ea = item.rateEA ?? 0;
-        const monthlyRate = Math.pow(1 + (ea / 100), 1 / 12) - 1;
-        return balance * monthlyRate;
+    if (type === 'FIXED_EA') {
+        const ea = snapshot.effectiveAnnualRateProjected ?? 0;
+        const monthlyRate = Math.pow(1 + ea, 1 / 12) - 1;
+        return { amount: snapshot.balance * monthlyRate, type };
     }
-    const monthly = item.rateMonthly ?? 0;
-    return balance * (monthly / 100);
+    const monthly = snapshot.projectedRateMonthly ?? 0;
+    return { amount: snapshot.balance * (monthly / 100), type };
 }
 
 function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
@@ -127,20 +129,20 @@ export function DashboardCharts() {
         const [
             accounts,
             snapshots,
-            incomes,
             expenses,
             debts,
-            projectedIncomes,
+            accountMovements,
+            projectedIncomeItems,
             periods,
             entities,
             prevSnapshots
         ] = await Promise.all([
             db.accounts.filter(a => a.isActive).toArray(),
             db.accountSnapshots.where('periodId').anyOf(periodIds).toArray(),
-            db.incomes.where('periodId').anyOf(periodIds).toArray(),
             db.expenses.where('periodId').anyOf(periodIds).toArray(),
             db.debts.where('periodId').anyOf(periodIds).toArray(),
-            db.projectedIncomes.where('periodId').anyOf(periodIds).toArray(),
+            db.accountMovements.where('periodId').anyOf(periodIds).toArray(),
+            db.projectedIncomeItems.where('periodId').anyOf(periodIds).toArray(),
             db.periods.where('id').anyOf(periodIds).toArray(),
             db.entities.toArray(),
             db.accountSnapshots.where('periodId').equals(prevPeriodId).toArray()
@@ -170,11 +172,20 @@ export function DashboardCharts() {
             expensesByPeriod.set(exp.periodId, list);
         });
 
-        const projectedByPeriod = new Map<string, typeof projectedIncomes>();
-        projectedIncomes.forEach(item => {
-            const list = projectedByPeriod.get(item.periodId) ?? [];
+        const projectedItemsByPeriod = new Map<string, typeof projectedIncomeItems>();
+        projectedIncomeItems.forEach(item => {
+            const list = projectedItemsByPeriod.get(item.periodId) ?? [];
             list.push(item);
-            projectedByPeriod.set(item.periodId, list);
+            projectedItemsByPeriod.set(item.periodId, list);
+        });
+
+        const movementTotalsByPeriod = new Map<string, Map<string, number>>();
+        accountMovements.forEach(movement => {
+            const periodMap = movementTotalsByPeriod.get(movement.periodId) ?? new Map<string, number>();
+            const sign = (movement.type === 'DEPOSIT' || movement.type === 'TRANSFER_IN') ? 1 : -1;
+            const prev = periodMap.get(movement.accountId) ?? 0;
+            periodMap.set(movement.accountId, prev + (sign * movement.amount));
+            movementTotalsByPeriod.set(movement.periodId, periodMap);
         });
 
         const getCapitalTotal = (pid: string) => {
@@ -226,14 +237,53 @@ export function DashboardCharts() {
         const getProjectedIncomeTotal = (pid: string) => {
             const period = getSafePeriod(pid, periodMap.get(pid));
             const snaps = snapshotsByPeriod.get(pid) ?? [];
-            const snapMap = new Map(snaps.map(s => [s.accountId, s]));
-            return (projectedByPeriod.get(pid) ?? []).reduce((sum, item) => {
-                const account = accounts.find(acc => acc.id === item.accountId);
+            const fromSnapshots = snaps.reduce((sum, snap) => {
+                const account = accounts.find(acc => acc.id === snap.accountId);
                 if (!account) return sum;
-                const balance = snapMap.get(item.accountId)?.balance ?? 0;
-                const amount = calculateProjectedIncomeAmount(item, balance);
+                const { amount } = calculateSnapshotProjectedAmount(snap);
                 return sum + toCOP(amount, account.currency, period);
             }, 0);
+            const fromItems = (projectedItemsByPeriod.get(pid) ?? []).reduce((sum, item) => {
+                return sum + toCOP(item.amount, item.currency, period);
+            }, 0);
+            return fromSnapshots + fromItems;
+        };
+
+        const getNonSalaryProjectedIncome = (pid: string) => {
+            const period = getSafePeriod(pid, periodMap.get(pid));
+            const snaps = snapshotsByPeriod.get(pid) ?? [];
+            const fromSnapshots = snaps.reduce((sum, snap) => {
+                const account = accounts.find(acc => acc.id === snap.accountId);
+                if (!account) return sum;
+                const { amount, type } = calculateSnapshotProjectedAmount(snap);
+                if (type === 'SALARY') return sum;
+                return sum + toCOP(amount, account.currency, period);
+            }, 0);
+            const fromItems = (projectedItemsByPeriod.get(pid) ?? []).reduce((sum, item) => {
+                if (item.type === 'SALARY') return sum;
+                return sum + toCOP(item.amount, item.currency, period);
+            }, 0);
+            return fromSnapshots + fromItems;
+        };
+
+        const getNonSalaryRealIncome = (pid: string, prevPid: string | null) => {
+            if (!prevPid) return 0;
+            const period = getSafePeriod(pid, periodMap.get(pid));
+            const snaps = snapshotsByPeriod.get(pid) ?? [];
+            const prevSnaps = snapshotsByPeriod.get(prevPid) ?? [];
+            const prevSnapMap = new Map(prevSnaps.map(s => [s.accountId, s]));
+            const movementTotals = movementTotalsByPeriod.get(pid) ?? new Map<string, number>();
+
+            const adjustedReturns = snaps.reduce((sum, snap) => {
+                const account = accounts.find(a => a.id === snap.accountId);
+                if (!account) return sum;
+                const prev = prevSnapMap.get(snap.accountId);
+                const netFlow = movementTotals.get(snap.accountId) ?? 0;
+                const realReturn = calculateRealReturn(snap.balance, prev?.balance, netFlow).realMonthlyReturn;
+                return sum + toCOP(realReturn, account.currency, period);
+            }, 0);
+
+            return adjustedReturns;
         };
 
         const monthlySeries = periodIds.map((pid, index) => {
@@ -247,6 +297,8 @@ export function DashboardCharts() {
             const prevPid = index > 0 ? periodIds[index - 1] : null;
             const prevCapital = prevPid ? getCapitalTotal(prevPid) : capitalTotal;
             const realIncome = capitalTotal - prevCapital;
+            const nonSalaryRealIncome = getNonSalaryRealIncome(pid, prevPid);
+            const nonSalaryProjectedIncome = getNonSalaryProjectedIncome(pid);
 
             return {
                 periodId: pid,
@@ -257,6 +309,8 @@ export function DashboardCharts() {
                 expensesTotal,
                 realIncome,
                 projectedIncome,
+                nonSalaryRealIncome,
+                nonSalaryProjectedIncome,
                 period
             };
         });
@@ -278,12 +332,14 @@ export function DashboardCharts() {
 
         const returnsByEntity = new Map<string, { projected: number; real: number }>();
         const prevSnapMap = new Map(prevSnapshots.map(s => [s.accountId, s]));
+        const currentMovementTotals = movementTotalsByPeriod.get(periodId) ?? new Map<string, number>();
         currentSnapshots.forEach(snap => {
             const account = accounts.find(a => a.id === snap.accountId);
             if (!account) return;
             const name = entityMap.get(account.entityId) || 'Sin Entidad';
             const prev = prevSnapMap.get(snap.accountId);
-            const realReturn = calculateRealReturn(snap.balance, prev?.balance).realMonthlyReturn;
+            const netFlow = currentMovementTotals.get(snap.accountId) ?? 0;
+            const realReturn = calculateRealReturn(snap.balance, prev?.balance, netFlow).realMonthlyReturn;
             const projectedReturn = snap.effectiveAnnualRateProjected
                 ? calculateProjectedReturn(snap.balance, snap.effectiveAnnualRateProjected).projectedMonthlyReturn
                 : 0;
@@ -396,7 +452,7 @@ export function DashboardCharts() {
                 </ChartCard>
             </div>
 
-            <div className="grid gap-6 lg:grid-cols-2">
+            <div className="grid gap-6 lg:grid-cols-3">
                 <ChartCard title="Ingresos Reales vs Proyectados">
                     <ResponsiveContainer width="100%" height="100%">
                         <ComposedChart data={data.monthlySeries} margin={{ top: 12, right: 12, left: 8, bottom: 8 }}>
@@ -407,6 +463,19 @@ export function DashboardCharts() {
                             <Bar dataKey="realIncome" name="Ingresos Reales" fill={COLORS[0]} />
                             <Line type="monotone" dataKey="projectedIncome" name="Ingresos Proyectados" stroke={COLORS[3]} strokeWidth={2} />
                         </ComposedChart>
+                    </ResponsiveContainer>
+                </ChartCard>
+
+                <ChartCard title="Ingresos No Salariales (Reales vs Proyectados)">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={data.monthlySeries} margin={{ top: 12, right: 12, left: 8, bottom: 8 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="label" tick={axisTick} minTickGap={16} />
+                            <YAxis width={yAxisWidth} tickFormatter={(value) => `$${formatMoney(value)}`} tick={axisTick} />
+                            <Tooltip content={<ChartTooltip />} />
+                            <Line type="monotone" dataKey="nonSalaryRealIncome" name="No Salarial Real" stroke={COLORS[1]} strokeWidth={2} />
+                            <Line type="monotone" dataKey="nonSalaryProjectedIncome" name="No Salarial Proyectado" stroke={COLORS[4]} strokeWidth={2} />
+                        </LineChart>
                     </ResponsiveContainer>
                 </ChartCard>
 

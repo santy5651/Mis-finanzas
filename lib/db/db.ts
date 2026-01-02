@@ -1,9 +1,9 @@
 
 import Dexie, { type Table } from 'dexie';
-import type { ProjectedIncome } from '@/lib/types';
+import type { ProjectedIncome, AccountMovement, ProjectedIncomeItem } from '@/lib/types';
 export type {
     Period, Entity, Account, AccountSnapshot,
-    Income, Expense, Debt, ProjectedIncome
+    Income, Expense, Debt, ProjectedIncome, AccountMovement, ProjectedIncomeItem
 } from '@/lib/types';
 
 export class PersonalEconomyDB extends Dexie {
@@ -15,6 +15,8 @@ export class PersonalEconomyDB extends Dexie {
     expenses!: Table<Expense>;
     debts!: Table<Debt>;
     projectedIncomes!: Table<ProjectedIncome>;
+    accountMovements!: Table<AccountMovement>;
+    projectedIncomeItems!: Table<ProjectedIncomeItem>;
 
     constructor() {
         super('PersonalEconomyDB');
@@ -153,6 +155,80 @@ export class PersonalEconomyDB extends Dexie {
                     debt.history = [];
                 }
             });
+        });
+
+        this.version(9).stores({
+            periods: 'id, year, month',
+            entities: 'id, name, type',
+            accounts: 'id, entityId, *categories, isActive',
+            accountSnapshots: 'id, periodId, accountId, [periodId+accountId]',
+            incomes: 'id, periodId, date, isSalary',
+            expenses: 'id, periodId, date, reason',
+            debts: 'id, periodId, entityId, seriesId',
+            projectedIncomes: 'id, periodId, date, entityId, accountId, type, isRecurring',
+            accountMovements: 'id, periodId, accountId, type, date, transferGroupId, [periodId+accountId]'
+        });
+
+        this.version(10).stores({
+            periods: 'id, year, month',
+            entities: 'id, name, type',
+            accounts: 'id, entityId, *categories, isActive',
+            accountSnapshots: 'id, periodId, accountId, [periodId+accountId]',
+            incomes: 'id, periodId, date, isSalary',
+            expenses: 'id, periodId, date, reason',
+            debts: 'id, periodId, entityId, seriesId',
+            projectedIncomes: 'id, periodId, date, entityId, accountId, type, isRecurring',
+            accountMovements: 'id, periodId, accountId, type, date, transferGroupId, [periodId+accountId]'
+        }).upgrade(async (tx) => {
+            const projectedTable = tx.table('projectedIncomes');
+            const snapshotTable = tx.table('accountSnapshots');
+            const projectedItems = await projectedTable.toArray();
+            const snapshotMap = new Map<string, any>();
+            const existingSnapshots = await snapshotTable.toArray();
+            existingSnapshots.forEach((snap: any) => {
+                snapshotMap.set(`${snap.periodId}:${snap.accountId}`, snap);
+            });
+
+            const now = new Date().toISOString();
+            for (const item of projectedItems) {
+                const key = `${item.periodId}:${item.accountId}`;
+                const existing = snapshotMap.get(key);
+                const snapshot = existing ?? {
+                    id: item.id,
+                    periodId: item.periodId,
+                    accountId: item.accountId,
+                    balance: 0,
+                    createdAt: now,
+                    updatedAt: now
+                };
+
+                const next = {
+                    ...snapshot,
+                    projectedIncomeType: item.type,
+                    projectedConcept: item.concept,
+                    projectedRateMonthly: item.type === 'VARIABLE_MONTHLY' ? (item.rateMonthly ?? 0) : snapshot.projectedRateMonthly,
+                    projectedAmount: (item.type === 'SALARY' || item.type === 'ONE_TIME') ? (item.amount ?? 0) : snapshot.projectedAmount,
+                    effectiveAnnualRateProjected: item.type === 'FIXED_EA'
+                        ? (item.rateEA ? item.rateEA / 100 : snapshot.effectiveAnnualRateProjected)
+                        : snapshot.effectiveAnnualRateProjected,
+                    updatedAt: now
+                };
+
+                await snapshotTable.put(next);
+            }
+        });
+
+        this.version(11).stores({
+            periods: 'id, year, month',
+            entities: 'id, name, type',
+            accounts: 'id, entityId, *categories, isActive',
+            accountSnapshots: 'id, periodId, accountId, [periodId+accountId]',
+            incomes: 'id, periodId, date, isSalary',
+            expenses: 'id, periodId, date, reason',
+            debts: 'id, periodId, entityId, seriesId',
+            projectedIncomes: 'id, periodId, date, entityId, accountId, type, isRecurring',
+            accountMovements: 'id, periodId, accountId, type, date, transferGroupId, [periodId+accountId]',
+            projectedIncomeItems: 'id, periodId, accountId, type, [periodId+accountId]'
         });
     }
 }

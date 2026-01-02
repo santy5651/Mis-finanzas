@@ -1,5 +1,5 @@
 
-import { Period, Account, AccountSnapshot, Income, Expense, Debt, Currency, AccountCategory } from '@/lib/types';
+import { Period, Account, AccountSnapshot, Income, Expense, Debt, Currency, AccountCategory, AccountMovement } from '@/lib/types';
 
 // Constants
 export const LIQUID_CATEGORIES: AccountCategory[] = ['CASH', 'LOW_AMOUNT_ACCOUNT'];
@@ -67,16 +67,20 @@ export interface RealReturnResult {
     realEA: number | null; // Decimal
 }
 
-export function calculateRealReturn(currentBalance: number, prevBalance: number | undefined): RealReturnResult {
+export function calculateRealReturn(
+    currentBalance: number,
+    prevBalance: number | undefined,
+    netFlow: number = 0
+): RealReturnResult {
     if (prevBalance === undefined) {
         return { realMonthlyReturn: 0, realMonthlyRate: null, realEA: null };
     }
 
-    const realMonthlyReturn = currentBalance - prevBalance;
+    const realMonthlyReturn = (currentBalance - prevBalance) - netFlow;
 
     // Rates only if prevBalance > 0
     if (prevBalance > 0) {
-        const realMonthlyRate = (currentBalance / prevBalance) - 1;
+        const realMonthlyRate = ((prevBalance + realMonthlyReturn) / prevBalance) - 1;
         const realEA = Math.pow(1 + realMonthlyRate, 12) - 1;
         return { realMonthlyReturn, realMonthlyRate, realEA };
     } else {
@@ -118,16 +122,11 @@ export function calculatePeriodSummary(
     accounts: Account[],
     snapshots: AccountSnapshot[],
     prevSnapshots: AccountSnapshot[], // Needed for Real Return
+    accountMovements: AccountMovement[],
 ): PeriodSummary {
 
-    // 1. Incomes
-    // Salary
-    const salaryIncomes = incomes.filter(i => i.isSalary);
-    const salaryIncomeCOP = salaryIncomes.reduce((sum, i) => sum + toCOP(i.amount, i.currency, period), 0);
-
-    // Manual Non-Salary Incomes (e.g. Sales, Gifts)
-    const manualNonSalaryIncomes = incomes.filter(i => !i.isSalary);
-    const manualNonSalaryIncomeCOP = manualNonSalaryIncomes.reduce((sum, i) => sum + toCOP(i.amount, i.currency, period), 0);
+    // 1. Incomes (calculated from snapshots and movements)
+    const salaryIncomeCOP = 0;
 
     // Calculated Non-Salary (Returns)
     let nonSalaryRealReturnsCOP = 0;
@@ -135,6 +134,12 @@ export function calculatePeriodSummary(
 
     // Helper map for snapshots
     const prevSnapMap = new Map(prevSnapshots.map(s => [s.accountId, s]));
+    const movementTotalsByAccount = new Map<string, number>();
+    accountMovements.forEach(movement => {
+        const sign = (movement.type === 'DEPOSIT' || movement.type === 'TRANSFER_IN') ? 1 : -1;
+        const prev = movementTotalsByAccount.get(movement.accountId) ?? 0;
+        movementTotalsByAccount.set(movement.accountId, prev + (sign * movement.amount));
+    });
 
     snapshots.forEach(chap => {
         const account = accounts.find(a => a.id === chap.accountId);
@@ -144,7 +149,8 @@ export function calculatePeriodSummary(
 
         // Real Return
         const prev = prevSnapMap.get(chap.accountId);
-        const { realMonthlyReturn } = calculateRealReturn(chap.balance, prev?.balance);
+        const netFlow = movementTotalsByAccount.get(chap.accountId) ?? 0;
+        const { realMonthlyReturn } = calculateRealReturn(chap.balance, prev?.balance, netFlow);
         nonSalaryRealReturnsCOP += toCOP(realMonthlyReturn, account.currency, period);
 
         // Projected Return
@@ -154,24 +160,14 @@ export function calculatePeriodSummary(
         }
     });
 
-    // Total Non-Salary Real = Manual Non-Salary + Real Returns
-    const incomeNonSalaryReal = manualNonSalaryIncomeCOP + nonSalaryRealReturnsCOP;
-
-    // Total Income = Salary + Non-Salary Real
-    const incomeTotal = salaryIncomeCOP + incomeNonSalaryReal;
-
     // 2. Expenses
     const expensesTotal = expenses.reduce((sum, e) => sum + toCOP(e.amount, e.currency, period), 0);
 
-    // 3. Balance
-    const balance = incomeTotal - expensesTotal;
-    const balanceWithoutSalary = incomeNonSalaryReal - expensesTotal;
-
-    // 4. Debt
+    // 3. Debt
     const debtTotal = debts.reduce((sum, d) => sum + getNetDebtAmount(d, period), 0);
     const prevDebtTotal = prevDebts.reduce((sum, d) => sum + getNetDebtAmount(d, period), 0);
 
-    // 5. Liquid & Capital
+    // 4. Liquid & Capital
     let liquidTotal = 0;
     let capitalTotal = 0;
 
@@ -190,7 +186,30 @@ export function calculatePeriodSummary(
         }
     });
 
-    // 6. Unspecified Expenses (Residuo)
+    // 5. Capital Delta and Income
+    let prevCapitalTotal = 0;
+    prevSnapshots.forEach(snap => {
+        const account = accounts.find(a => a.id === snap.accountId);
+        const categories = account ? getAccountCategories(account) : [];
+        if (account && categories.some(category => CAPITAL_CATEGORIES.includes(category))) {
+            prevCapitalTotal += toCOP(snap.balance, account.currency, period);
+        }
+    });
+
+    const netCapitalTotal = capitalTotal - debtTotal;
+    const netPrevCapitalTotal = prevCapitalTotal - prevDebtTotal;
+
+    // Total Income = Returns (calculated) to avoid dependency on manual incomes
+    const incomeTotal = nonSalaryRealReturnsCOP;
+
+    // Total Non-Salary Real = Total Income - Salary
+    const incomeNonSalaryReal = incomeTotal - salaryIncomeCOP;
+
+    // 6. Balance
+    const balance = incomeTotal - expensesTotal;
+    const balanceWithoutSalary = incomeNonSalaryReal - expensesTotal;
+
+    // 7. Unspecified Expenses (Residuo)
     // Option B from Prompt: (SaldoInicial + Ingresos) - EgresosRegistrados - SaldoFinal
     // But SaldoInicial is Capital(T-1) and SaldoFinal is Capital(T).
     // Let's use Option A if PlannedExpenses exists, else use Option B-ish or just 0 for now.
@@ -207,19 +226,6 @@ export function calculatePeriodSummary(
     // ExpenseUnspecified = IncomeTotal - ExpensesTotal - (Capital(T) - Capital(T-1)). 
     // Logically: Income - Expense = Savings (Flow). Delta Capital is Savings (Stock). Difference is leakage.
     // Ensure we have Capital(T-1). We verify via prevSnapshots.
-
-    let prevCapitalTotal = 0;
-    prevSnapshots.forEach(snap => {
-        const account = accounts.find(a => a.id === snap.accountId);
-        const categories = account ? getAccountCategories(account) : [];
-        if (account && categories.some(category => CAPITAL_CATEGORIES.includes(category))) {
-            prevCapitalTotal += toCOP(snap.balance, account.currency, period); // Assuming same TRM or re-converting T-1 at T rates? Prompt implies historical is usually fixed but for comparison we typically use consistent rates or raw deltas. 
-            // Actually, "Delta Patrimonial" usually implies simply CapitalT - CapitalT-1 in reporting currency.
-        }
-    });
-
-    const netCapitalTotal = capitalTotal - debtTotal;
-    const netPrevCapitalTotal = prevCapitalTotal - prevDebtTotal;
 
     const savingsFlow = incomeTotal - expensesTotal; // Theoretical savings
     const savingsStock = netCapitalTotal - netPrevCapitalTotal; // Actual savings (Delta Capital)

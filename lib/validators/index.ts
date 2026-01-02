@@ -17,6 +17,7 @@ export const debtHistoryEntrySchema = z.object({
     createdAt: z.string()
 });
 export const projectedIncomeTypeSchema = z.enum(['FIXED_EA', 'VARIABLE_MONTHLY', 'ONE_TIME', 'SALARY']);
+export const accountMovementTypeSchema = z.enum(['DEPOSIT', 'WITHDRAWAL', 'TRANSFER_IN', 'TRANSFER_OUT']);
 
 export const periodSchema = z.object({
     id: z.string().regex(/^\d{4}-\d{2}$/, "El formato debe ser YYYY-MM"),
@@ -49,6 +50,10 @@ export const accountSnapshotSchema = z.object({
     accountId: z.string().uuid(),
     balance: z.coerce.number(),
     effectiveAnnualRateProjected: z.coerce.number().optional(), // 0.12 for 12%
+    projectedIncomeType: projectedIncomeTypeSchema.optional(),
+    projectedRateMonthly: z.coerce.number().optional(),
+    projectedAmount: z.coerce.number().optional(),
+    projectedConcept: z.string().optional(),
     notes: z.string().optional(),
     createdAt: z.string(),
     updatedAt: z.string(),
@@ -110,4 +115,30 @@ export const projectedIncomeSchema = z.object({
     amount: z.coerce.number().min(0).optional(),
     isRecurring: z.boolean().optional(),
     notes: z.string().optional(),
+});
+
+export const projectedIncomeItemSchema = z.object({
+    id: z.string().uuid(),
+    periodId: z.string(),
+    accountId: z.string().uuid(),
+    type: z.enum(['SALARY', 'ONE_TIME']),
+    concept: z.string().min(1, "El concepto es obligatorio"),
+    amount: z.coerce.number().positive(),
+    currency: currencySchema,
+    createdAt: z.string(),
+    updatedAt: z.string()
+});
+
+export const accountMovementSchema = z.object({
+    id: z.string().uuid(),
+    periodId: z.string(),
+    accountId: z.string().uuid(),
+    date: z.string(),
+    type: accountMovementTypeSchema,
+    amount: z.coerce.number().positive(),
+    currency: currencySchema,
+    relatedAccountId: z.string().uuid().optional(),
+    transferGroupId: z.string().uuid().optional(),
+    notes: z.string().optional(),
+    createdAt: z.string()
 });
