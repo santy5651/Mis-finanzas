@@ -30,6 +30,15 @@ export type FinancialEventType =
   | 'ADJUSTMENT'
   | 'LEGACY_MOVEMENT';
 export type PlannedCashFlowType = 'SALARY' | 'OTHER_INCOME' | 'EXPENSE';
+/** How an account produces returns: credited interest, or market value changes (funds, brokers). */
+export type ReturnBehavior = 'INTEREST' | 'MARKET_VALUE';
+export type ReturnKind =
+  | 'INTEREST'
+  | 'DIVIDEND'
+  | 'REALIZED_GAIN'
+  | 'UNREALIZED_VALUATION'
+  | 'CASHBACK'
+  | 'OTHER';
 
 export interface Period {
   id: string; // "YYYY-MM"
@@ -61,6 +70,9 @@ export interface Account {
   currency: Currency;
   isSalaryAccount?: boolean;
   isActive: boolean;
+  returnBehavior?: ReturnBehavior; // Defecto INTEREST
+  isRestricted?: boolean; // Patrimonio, pero no disponible para gastos (cesantías, encargos)
+  legalHolder?: string; // Titular legal cuando no es el dueño económico
 }
 
 export interface AccountSnapshot {
@@ -214,6 +226,7 @@ export interface FinancialEvent {
   expenseId?: string;
   incomeId?: string;
   incomeKind?: 'SALARY' | 'OTHER_INCOME';
+  returnKind?: ReturnKind; // Solo PASSIVE_RETURN; sin valor se infiere del perfil de la cuenta
   plannedCashFlowId?: string;
   obligationId?: string;
   installments?: number;

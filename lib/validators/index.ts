@@ -42,6 +42,9 @@ export const accountSchema = z.object({
     currency: currencySchema,
     isSalaryAccount: z.boolean().optional(),
     isActive: z.boolean(),
+    returnBehavior: z.enum(['INTEREST', 'MARKET_VALUE']).optional(),
+    isRestricted: z.boolean().optional(),
+    legalHolder: z.string().trim().max(80).optional(),
 });
 
 export const accountSnapshotSchema = z.object({

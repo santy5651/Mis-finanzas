@@ -2,11 +2,12 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '@/lib/db/db';
 import type { Account, Expense, Obligation } from '@/lib/types';
-import { deleteExpenseWithLedger, deleteFinancialEvent, LedgerError, saveExpenseWithLedger, saveFinancialEvent } from './ledger';
+import { deleteExpenseWithLedger, deleteFinancialEvent, LedgerError, pairEventsAsTransfer, saveExpenseWithLedger, saveFinancialEvent } from './ledger';
 
 const now = '2026-10-01T00:00:00.000Z';
 const cop: Account = { id: 'cop', name: 'Ahorros COP', entityId: 'bank', accountType: 'Ahorros', categories: ['SAVINGS'], currency: 'COP', isActive: true };
 const usd: Account = { ...cop, id: 'usd', name: 'Cuenta USD', currency: 'USD' };
+const pocket: Account = { ...cop, id: 'pocket', name: 'Bolsillo' };
 const card: Obligation = { id: 'card', entityId: 'bank', name: 'Tarjeta', direction: 'PAYABLE', type: 'CREDIT_CARD', currency: 'COP', isActive: true, createdAt: now, updatedAt: now };
 
 async function closePeriod(periodId: string) {
@@ -19,7 +20,7 @@ function expense(overrides: Partial<Expense> = {}): Expense {
 
 beforeEach(async () => {
     await Promise.all(db.tables.map(table => table.clear()));
-    await db.accounts.bulkAdd([cop, usd]);
+    await db.accounts.bulkAdd([cop, usd, pocket]);
     await db.obligations.add(card);
 });
 
@@ -129,5 +130,57 @@ describe('saveExpenseWithLedger', () => {
         await closePeriod('2026-10');
         await expect(saveExpenseWithLedger({ ...saved, date: '2026-11-02', periodId: '2026-11' }, { kind: 'ACCOUNT', accountId: 'cop' }))
             .rejects.toBeInstanceOf(LedgerError);
+    });
+});
+
+describe('pairEventsAsTransfer', () => {
+    const oneSided = (id: string, type: 'INCOME' | 'ADJUSTMENT', accountId: string, amount: number) => saveFinancialEvent(
+        { id, periodId: '2026-10', date: '2026-10-09', type, concept: id },
+        [{ accountId, amount, currency: 'COP' }],
+    );
+
+    it('turns a reconciled income and adjustment into a transfer and keeps the excess', async () => {
+        await oneSided('adj', 'ADJUSTMENT', 'cop', -2_009_618);
+        await oneSided('inc', 'INCOME', 'pocket', 1_896_531);
+        const transferId = await pairEventsAsTransfer('adj', 'inc');
+
+        const transferEntries = await db.accountEntries.where('eventId').equals(transferId).toArray();
+        expect(transferEntries.map(entry => entry.amount).sort((a, b) => a - b)).toEqual([-1_896_531, 1_896_531]);
+        expect(await db.financialEvents.get('inc')).toBeUndefined();
+        const [rest] = await db.accountEntries.where('eventId').equals('adj').toArray();
+        expect(rest.amount).toBe(-113_087);
+
+        const perAccount = async (accountId: string) => (await db.accountEntries.where('accountId').equals(accountId).toArray())
+            .reduce((sum, entry) => sum + entry.amount, 0);
+        expect(await perAccount('cop')).toBe(-2_009_618);
+        expect(await perAccount('pocket')).toBe(1_896_531);
+    });
+
+    it('removes both events when the amounts match exactly', async () => {
+        await oneSided('adj', 'ADJUSTMENT', 'cop', -500_000);
+        await oneSided('inc', 'INCOME', 'pocket', 500_000);
+        await pairEventsAsTransfer('adj', 'inc');
+        expect((await db.financialEvents.toArray()).map(event => event.type)).toEqual(['TRANSFER']);
+    });
+
+    it('rejects pairs in the wrong direction, across currencies or in a closed period', async () => {
+        await oneSided('adj', 'ADJUSTMENT', 'cop', -500_000);
+        await oneSided('inc', 'INCOME', 'pocket', 500_000);
+        await expect(pairEventsAsTransfer('inc', 'adj')).rejects.toBeInstanceOf(LedgerError);
+
+        await saveFinancialEvent({ id: 'usd-in', periodId: '2026-10', date: '2026-10-09', type: 'INCOME', concept: 'usd' }, [{ accountId: 'usd', amount: 100, currency: 'USD' }]);
+        await expect(pairEventsAsTransfer('adj', 'usd-in')).rejects.toBeInstanceOf(LedgerError);
+
+        await closePeriod('2026-10');
+        await expect(pairEventsAsTransfer('adj', 'inc')).rejects.toBeInstanceOf(LedgerError);
+        expect(await db.financialEvents.count()).toBe(3);
+    });
+
+    it('stores amounts without floating-point noise', async () => {
+        const id = await saveFinancialEvent(
+            { periodId: '2026-10', date: '2026-10-09', type: 'PASSIVE_RETURN', concept: 'IQ' },
+            [{ accountId: 'usd', amount: 463.38 - 427, currency: 'USD' }],
+        );
+        expect((await db.accountEntries.where('eventId').equals(id).first())?.amount).toBe(36.38);
     });
 });

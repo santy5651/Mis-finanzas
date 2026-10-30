@@ -47,12 +47,21 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
             currency: defaultValues?.currency ?? 'COP',
             isSalaryAccount: defaultValues?.isSalaryAccount ?? false,
             isActive: defaultValues?.isActive ?? true,
+            returnBehavior: defaultValues?.returnBehavior ?? 'INTEREST',
+            isRestricted: defaultValues?.isRestricted ?? false,
+            legalHolder: defaultValues?.legalHolder ?? '',
         }
     });
+    const accountId = form.getValues('id');
+    // Changing the currency of an account with history would silently reinterpret its balances.
+    const hasHistory = useLiveQuery(async () => (
+        await db.accountSnapshots.where('accountId').equals(accountId).count()
+        + await db.accountEntries.where('accountId').equals(accountId).count()
+    ) > 0, [accountId]) ?? false;
 
     async function onSubmit(data: AccountFormValues) {
         try {
-            await db.accounts.put(data);
+            await db.accounts.put({ ...data, legalHolder: data.legalHolder || undefined });
             form.reset({
                 id: uuidv4(),
                 name: '',
@@ -62,6 +71,9 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                 currency: 'COP',
                 isSalaryAccount: false,
                 isActive: true,
+                returnBehavior: 'INTEREST',
+                isRestricted: false,
+                legalHolder: '',
             });
             onSuccess?.();
         } catch (error) {
@@ -172,7 +184,7 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                         render={({ field }) => (
                             <FormItem>
                                 <FormLabel>Moneda</FormLabel>
-                                <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                <Select onValueChange={field.onChange} defaultValue={field.value} disabled={hasHistory}>
                                     <FormControl>
                                         <SelectTrigger>
                                             <SelectValue placeholder="Seleccione moneda" />
@@ -183,13 +195,54 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                                         <SelectItem value="USD">USD</SelectItem>
                                     </SelectContent>
                                 </Select>
+                                {hasHistory && <p className="text-xs text-slate-500">Bloqueada: la cuenta ya tiene saldos o movimientos.</p>}
                                 <FormMessage />
                             </FormItem>
                         )}
                     />
                 </div>
 
-                <div className="flex space-x-4">
+                <div className="grid grid-cols-2 gap-4">
+                    <FormField
+                        control={form.control}
+                        name="returnBehavior"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Cómo rinde</FormLabel>
+                                <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                    <FormControl>
+                                        <SelectTrigger>
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                    </FormControl>
+                                    <SelectContent>
+                                        <SelectItem value="INTEREST">Abona intereses</SelectItem>
+                                        <SelectItem value="MARKET_VALUE">Cambia de valor (fondos, brókeres)</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <p className="text-xs text-slate-500">Las variaciones de valor se muestran como no realizadas, no como dinero cobrado.</p>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+
+                    <FormField
+                        control={form.control}
+                        name="legalHolder"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Titular legal (opcional)</FormLabel>
+                                <FormControl>
+                                    <Input placeholder="Solo si la cuenta está a nombre de otra persona" {...field} />
+                                </FormControl>
+                                <p className="text-xs text-slate-500">El dinero sigue siendo tuyo; traerlo a otra cuenta es un traslado.</p>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                </div>
+
+                <div className="flex flex-wrap gap-4">
                     <FormField
                         control={form.control}
                         name="isSalaryAccount"
@@ -218,6 +271,22 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                                     />
                                 </FormControl>
                                 <FormLabel>Activa</FormLabel>
+                            </FormItem>
+                        )}
+                    />
+
+                    <FormField
+                        control={form.control}
+                        name="isRestricted"
+                        render={({ field }) => (
+                            <FormItem className="flex flex-row items-center space-x-2 space-y-0">
+                                <FormControl>
+                                    <Checkbox
+                                        checked={field.value}
+                                        onCheckedChange={field.onChange}
+                                    />
+                                </FormControl>
+                                <FormLabel>Restringida (cesantías, no disponible para gastos)</FormLabel>
                             </FormItem>
                         )}
                     />

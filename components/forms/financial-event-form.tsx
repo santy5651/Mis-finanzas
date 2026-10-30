@@ -6,7 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { db } from '@/lib/db/db';
 import { saveFinancialEvent } from '@/lib/finance/ledger';
 import { dateInsidePeriod } from '@/lib/finance/period';
-import type { FinancialEventType } from '@/lib/types';
+import { defaultReturnKind, RETURN_KIND_LABELS, RETURN_KINDS, SIGNED_RETURN_KINDS } from '@/lib/finance/returns';
+import type { FinancialEventType, ReturnKind } from '@/lib/types';
 import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,7 +30,11 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
     const [concept, setConcept] = useState(type === 'INCOME' ? 'Ingreso' : '');
     const [date, setDate] = useState(dateInsidePeriod(periodId));
     const [message, setMessage] = useState<{ tone: 'error' | 'success'; text: string } | null>(null);
+    const [chosenReturnKind, setChosenReturnKind] = useState<ReturnKind | null>(null);
+    const [isLoss, setIsLoss] = useState(false);
     const source = useMemo(() => accounts.find(item => item.id === accountId), [accounts, accountId]);
+    const returnKind = chosenReturnKind ?? defaultReturnKind(source);
+    const canBeLoss = SIGNED_RETURN_KINDS.includes(returnKind);
     const destination = useMemo(() => accounts.find(item => item.id === destinationId), [accounts, destinationId]);
     useEffect(() => { setDate(dateInsidePeriod(periodId)); }, [periodId]);
 
@@ -63,13 +68,16 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
                     { accountId: destination.id, amount: received, currency: destination.currency },
                 ]);
             } else {
+                const signed = type === 'PASSIVE_RETURN' && canBeLoss && isLoss ? -parsed : parsed;
                 await saveFinancialEvent({
                     id: uuidv4(), periodId, date, type, concept: concept.trim(),
                     incomeKind: type === 'INCOME' ? incomeKind : undefined,
-                }, [{ accountId: source.id, amount: parsed, currency: source.currency }]);
+                    returnKind: type === 'PASSIVE_RETURN' ? returnKind : undefined,
+                }, [{ accountId: source.id, amount: signed, currency: source.currency }]);
             }
             setAmount('');
             setDestinationAmount('');
+            setIsLoss(false);
             setConcept(type === 'INCOME' ? 'Ingreso' : '');
             setMessage({ tone: 'success', text: 'Movimiento registrado y enlazado correctamente.' });
             onSuccess?.();
@@ -88,7 +96,7 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
                         <SelectContent>
                             <SelectItem value="INCOME">Ingreso externo</SelectItem>
                             <SelectItem value="TRANSFER">Transferencia entre cuentas</SelectItem>
-                            <SelectItem value="PASSIVE_RETURN">Rendimiento pasivo confirmado</SelectItem>
+                            <SelectItem value="PASSIVE_RETURN">Rendimiento o beneficio</SelectItem>
                             <SelectItem value="ADJUSTMENT">Ajuste explicado</SelectItem>
                         </SelectContent>
                     </Select>
@@ -97,12 +105,28 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
             </div>
             <div className="space-y-1.5">
                 <Label>{type === 'TRANSFER' ? 'Cuenta origen' : 'Cuenta afectada'}</Label>
-                <Select value={accountId} onValueChange={setAccountId}>
+                <Select value={accountId} onValueChange={value => { setAccountId(value); setChosenReturnKind(null); }}>
                     <SelectTrigger><SelectValue placeholder="Selecciona una cuenta" /></SelectTrigger>
                     <SelectContent>{accounts.map(item => <SelectItem key={item.id} value={item.id}>{item.name} · {item.currency}{item.isSalaryAccount ? ' · Nómina' : ''}</SelectItem>)}</SelectContent>
                 </Select>
             </div>
             {type === 'INCOME' && <div className="space-y-1.5"><Label>Clase de ingreso</Label><Select value={incomeKind} onValueChange={value => { const next = value as typeof incomeKind; setIncomeKind(next); if (next === 'SALARY' && (!concept.trim() || concept === 'Ingreso')) setConcept('Salario'); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="SALARY">Salario</SelectItem><SelectItem value="OTHER_INCOME">Otro ingreso externo</SelectItem></SelectContent></Select></div>}
+            {type === 'PASSIVE_RETURN' && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                        <Label>Naturaleza</Label>
+                        <Select value={returnKind} onValueChange={value => setChosenReturnKind(value as ReturnKind)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>{RETURN_KINDS.map(kind => <SelectItem key={kind} value={kind}>{RETURN_KIND_LABELS[kind]}</SelectItem>)}</SelectContent>
+                        </Select>
+                    </div>
+                    {canBeLoss && (
+                        <label className="flex items-center gap-2 self-end pb-2 text-sm">
+                            <input type="checkbox" checked={isLoss} onChange={event => setIsLoss(event.target.checked)} /> Es una pérdida
+                        </label>
+                    )}
+                </div>
+            )}
             {type === 'TRANSFER' && (
                 <div className="space-y-1.5">
                     <Label>Cuenta destino</Label>

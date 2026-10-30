@@ -6,6 +6,7 @@ import type {
     FinancialEvent,
     FinancialEventType,
     ObligationEntry,
+    ReturnKind,
 } from '@/lib/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -20,6 +21,7 @@ type EventInput = {
     installments?: number;
     notes?: string;
     incomeKind?: 'SALARY' | 'OTHER_INCOME';
+    returnKind?: ReturnKind;
     plannedCashFlowId?: string;
 };
 
@@ -27,6 +29,9 @@ type AccountDelta = { accountId: string; amount: number; currency: Currency };
 type ObligationDelta = { obligationId: string; amount: number; currency: Currency };
 
 export class LedgerError extends Error {}
+
+/** Strips floating-point noise such as 36.379999999999995 before persisting. */
+const toCents = (amount: number) => Math.round(amount * 100) / 100;
 
 /** Must run inside a transaction that includes db.periods. */
 async function assertPeriodOpen(periodId: string): Promise<void> {
@@ -79,6 +84,7 @@ export async function saveFinancialEvent(
         installments: input.installments,
         notes: input.notes,
         incomeKind: input.incomeKind,
+        returnKind: input.type === 'PASSIVE_RETURN' ? input.returnKind : undefined,
         plannedCashFlowId: input.plannedCashFlowId,
         createdAt: now,
         updatedAt: now,
@@ -96,7 +102,7 @@ export async function saveFinancialEvent(
         eventId,
         periodId: input.periodId,
         accountId: delta.accountId,
-        amount: delta.amount,
+        amount: toCents(delta.amount),
         currency: delta.currency,
         createdAt: now,
     }));
@@ -105,7 +111,7 @@ export async function saveFinancialEvent(
         eventId,
         periodId: input.periodId,
         obligationId: delta.obligationId,
-        amount: delta.amount,
+        amount: toCents(delta.amount),
         currency: delta.currency,
         createdAt: now,
     }));
@@ -208,5 +214,64 @@ export async function deleteExpenseWithLedger(expense: Expense): Promise<void> {
     await db.transaction('rw', db.periods, db.expenses, async () => {
         await assertPeriodOpen(expense.periodId);
         await db.expenses.delete(expense.id);
+    });
+}
+
+/** Event types a reconciliation may have used for what was really money moved between own accounts. */
+export const PAIRABLE_TYPES: FinancialEventType[] = ['INCOME', 'EXPENSE', 'ADJUSTMENT', 'PASSIVE_RETURN', 'LEGACY_MOVEMENT'];
+
+/**
+ * Rewrites two one-sided events (money that left one account, money that arrived in another) as a
+ * single transfer. The smaller amount moves; any excess stays in the larger event with its type.
+ */
+export async function pairEventsAsTransfer(outgoingEventId: string, incomingEventId: string): Promise<string> {
+    return db.transaction('rw', [db.periods, db.financialEvents, db.accountEntries, db.obligationEntries], async () => {
+        const [outgoing, incoming] = await Promise.all([outgoingEventId, incomingEventId].map(async id => {
+            const event = await db.financialEvents.get(id);
+            const entries = await db.accountEntries.where('eventId').equals(id).toArray();
+            const obligationCount = await db.obligationEntries.where('eventId').equals(id).count();
+            if (!event || !PAIRABLE_TYPES.includes(event.type) || event.expenseId || event.incomeId || entries.length !== 1 || obligationCount) {
+                throw new LedgerError('Solo se pueden emparejar movimientos de una sola cuenta sin gasto o ingreso vinculado.');
+            }
+            return { event, entry: entries[0] };
+        }));
+        if (outgoing.entry.amount >= 0 || incoming.entry.amount <= 0) {
+            throw new LedgerError('El primer movimiento debe restar dinero y el segundo sumarlo.');
+        }
+        if (outgoing.event.periodId !== incoming.event.periodId) throw new LedgerError('Ambos movimientos deben ser del mismo periodo.');
+        if (outgoing.entry.accountId === incoming.entry.accountId) throw new LedgerError('Las cuentas deben ser distintas.');
+        if (outgoing.entry.currency !== incoming.entry.currency) throw new LedgerError('Ambas cuentas deben usar la misma moneda.');
+        await assertPeriodOpen(outgoing.event.periodId);
+
+        const amount = Math.min(-outgoing.entry.amount, incoming.entry.amount);
+        const now = new Date().toISOString();
+        const transferId = uuidv4();
+        await db.financialEvents.add({
+            id: transferId,
+            periodId: outgoing.event.periodId,
+            date: outgoing.event.date > incoming.event.date ? outgoing.event.date : incoming.event.date,
+            type: 'TRANSFER',
+            concept: 'Traslado entre cuentas propias',
+            notes: `Reclasificado desde: ${outgoing.event.concept} / ${incoming.event.concept}`,
+            effectiveExchangeRate: 1,
+            createdAt: now,
+            updatedAt: now,
+        });
+        await db.accountEntries.bulkAdd([
+            { id: uuidv4(), eventId: transferId, periodId: outgoing.event.periodId, accountId: outgoing.entry.accountId, amount: -amount, currency: outgoing.entry.currency, createdAt: now },
+            { id: uuidv4(), eventId: transferId, periodId: incoming.event.periodId, accountId: incoming.entry.accountId, amount, currency: incoming.entry.currency, createdAt: now },
+        ]);
+
+        for (const side of [outgoing, incoming]) {
+            const remaining = toCents(side.entry.amount + (side === outgoing ? amount : -amount));
+            if (remaining === 0) {
+                await db.accountEntries.delete(side.entry.id);
+                await db.financialEvents.delete(side.event.id);
+            } else {
+                await db.accountEntries.update(side.entry.id, { amount: remaining });
+                await db.financialEvents.update(side.event.id, { updatedAt: now });
+            }
+        }
+        return transferId;
     });
 }
