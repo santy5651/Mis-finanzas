@@ -84,6 +84,9 @@ export const expenseSchema = z.object({
     installments: z.coerce.number().int().min(1),
     isRecurring: z.boolean().optional(),
     notes: z.string().optional(),
+    paymentAccountId: z.string().uuid().optional(),
+    obligationId: z.string().min(1).optional(),
+    financialEventId: z.string().min(1).optional(),
 });
 
 export const debtSchema = z.object({

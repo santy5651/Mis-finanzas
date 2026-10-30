@@ -51,7 +51,7 @@ export function EntityForm({ onSuccess, defaultValues }: EntityFormProps) {
             onSuccess?.();
         } catch (error) {
             console.error(error);
-            alert("Error al guardar la entidad");
+            form.setError('root', { message: 'No fue posible guardar la entidad.' });
         }
     }
 
@@ -111,6 +111,7 @@ export function EntityForm({ onSuccess, defaultValues }: EntityFormProps) {
                     )}
                 />
 
+                {form.formState.errors.root?.message && <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{form.formState.errors.root.message}</div>}
                 <Button type="submit" className="w-full">Guardar Entidad</Button>
             </form>
         </Form>

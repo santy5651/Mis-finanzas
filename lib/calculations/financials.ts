@@ -1,251 +1,59 @@
+import type { AccountCategory, Currency, Period } from '@/lib/types';
 
-import { Period, Account, AccountSnapshot, Income, Expense, Debt, Currency, AccountCategory, AccountMovement } from '@/lib/types';
-
-// Constants
 export const LIQUID_CATEGORIES: AccountCategory[] = ['CASH', 'LOW_AMOUNT_ACCOUNT'];
-export const CAPITAL_CATEGORIES: AccountCategory[] = [
-    'CASH', 'LOW_AMOUNT_ACCOUNT', 'SAVINGS', 'EMERGENCY_FUND',
-    'INVEST_SHORT', 'INVEST_MEDIUM', 'INVEST_LONG', 'RETIREMENT', 'OTHER'
-];
 
-function getAccountCategories(account: Account): AccountCategory[] {
-    const legacyCategory = (account as Account & { category?: AccountCategory }).category;
-    return account.categories?.length ? account.categories : (legacyCategory ? [legacyCategory] : []);
-}
-
-/**
- * Converts an amount to COP using the period's TRM.
- * If currency is already COP, returns amount.
- * If no rate provided for USD, returns amount but logs warning (or strict mode?).
- * Requirement: "si falta usdCopRate y hay USD -> el sistema marca el periodo como incompleto"
- * For MVP calculation, we'll try to use provided rate or default to 1 (with valid=false flag implication).
- */
+/** Convierte un valor a COP. Si falta la TRM, el valor no se incluye en los totales. */
 export function toCOP(amount: number, currency: Currency, period: Period): number {
     if (currency === 'COP') return amount;
-    if (currency === 'USD') {
-        if (period.usdCopRate) {
-            return amount * period.usdCopRate;
-        } else {
-            console.warn(`Missing TRM for period ${period.id}, cannot convert USD correctly.`);
-            // Fallback to 0 or keeping amount? Keeping amount is confusing. Returning 0 might be safer for sums.
-            // Let's return 0 to indicate "value uncalculable in COP".
-            return 0;
-        }
+    if (!period.usdCopRate) {
+        console.warn(`No se puede convertir USD en ${period.id}: falta la TRM.`);
+        return 0;
     }
-    return amount;
+    return amount * period.usdCopRate;
 }
 
-/**
- * PURE FINANCIAL MATH
- */
-
-// 1. Projected Returns
 export interface ProjectedReturnResult {
-    monthlyRateProjected: number; // Decimal (0.01 = 1%)
+    monthlyRateProjected: number;
     projectedEndBalance: number;
     projectedMonthlyReturn: number;
 }
 
-export function calculateProjectedReturn(currentBalance: number, eaProjected: number): ProjectedReturnResult {
-    // eaProjected is expected in decimal (e.g. 0.12 for 12%)
-    // formula: (1 + EA)^(1/12) - 1
-    const monthlyRateProjected = Math.pow(1 + eaProjected, 1 / 12) - 1;
+/** Convierte una tasa efectiva anual decimal (0.12 = 12 %) en rendimiento mensual. */
+export function calculateProjectedReturn(currentBalance: number, effectiveAnnualRate: number): ProjectedReturnResult {
+    const monthlyRateProjected = Math.pow(1 + effectiveAnnualRate, 1 / 12) - 1;
     const projectedEndBalance = currentBalance * (1 + monthlyRateProjected);
-    const projectedMonthlyReturn = projectedEndBalance - currentBalance;
-
     return {
         monthlyRateProjected,
         projectedEndBalance,
-        projectedMonthlyReturn
+        projectedMonthlyReturn: projectedEndBalance - currentBalance,
     };
 }
 
-// 2. Real Returns
 export interface RealReturnResult {
-    realMonthlyReturn: number; // Absolute (B_t - B_{t-1})
-    realMonthlyRate: number | null; // Decimal
-    realEA: number | null; // Decimal
+    realMonthlyReturn: number;
+    realMonthlyRate: number | null;
+    realEA: number | null;
 }
 
+/** Aísla el rendimiento real descontando los aportes y retiros del cambio de saldo. */
 export function calculateRealReturn(
     currentBalance: number,
-    prevBalance: number | undefined,
-    netFlow: number = 0
+    previousBalance: number | undefined,
+    netFlow = 0,
 ): RealReturnResult {
-    if (prevBalance === undefined) {
+    if (previousBalance === undefined) {
         return { realMonthlyReturn: 0, realMonthlyRate: null, realEA: null };
     }
 
-    const realMonthlyReturn = (currentBalance - prevBalance) - netFlow;
-
-    // Rates only if prevBalance > 0
-    if (prevBalance > 0) {
-        const realMonthlyRate = ((prevBalance + realMonthlyReturn) / prevBalance) - 1;
-        const realEA = Math.pow(1 + realMonthlyRate, 12) - 1;
-        return { realMonthlyReturn, realMonthlyRate, realEA };
-    } else {
+    const realMonthlyReturn = currentBalance - previousBalance - netFlow;
+    if (previousBalance <= 0) {
         return { realMonthlyReturn, realMonthlyRate: null, realEA: null };
     }
-}
 
-/**
- * AGGREGATORS (Dashboard Logic)
- */
-
-export interface PeriodSummary {
-    incomeTotal: number;
-    incomeSalary: number;
-    incomeNonSalaryReal: number;
-    incomeNonSalaryProjected: number;
-    expensesTotal: number;
-    balance: number;
-    balanceWithoutSalary: number;
-    debtTotal: number;
-    liquidTotal: number;
-    capitalTotal: number;
-    unspecifiedExpense: number;
-    plannedExpenses?: number; // Optional input
-}
-
-function getNetDebtAmount(debt: Debt, period: Period): number {
-    const amortization = debt.amortizationAmount ?? 0;
-    const net = debt.amount - amortization;
-    return Math.max(0, toCOP(net, debt.currency, period));
-}
-
-export function calculatePeriodSummary(
-    period: Period,
-    incomes: Income[],
-    expenses: Expense[],
-    debts: Debt[],
-    prevDebts: Debt[],
-    accounts: Account[],
-    snapshots: AccountSnapshot[],
-    prevSnapshots: AccountSnapshot[], // Needed for Real Return
-    accountMovements: AccountMovement[],
-): PeriodSummary {
-
-    // 1. Incomes (calculated from snapshots and movements)
-    const salaryIncomeCOP = 0;
-
-    // Calculated Non-Salary (Returns)
-    let nonSalaryRealReturnsCOP = 0;
-    let nonSalaryProjectedReturnsCOP = 0;
-
-    // Helper map for snapshots
-    const prevSnapMap = new Map(prevSnapshots.map(s => [s.accountId, s]));
-    const movementTotalsByAccount = new Map<string, number>();
-    accountMovements.forEach(movement => {
-        const sign = (movement.type === 'DEPOSIT' || movement.type === 'TRANSFER_IN') ? 1 : -1;
-        const prev = movementTotalsByAccount.get(movement.accountId) ?? 0;
-        movementTotalsByAccount.set(movement.accountId, prev + (sign * movement.amount));
-    });
-
-    snapshots.forEach(chap => {
-        const account = accounts.find(a => a.id === chap.accountId);
-        if (!account) return;
-
-        // Valid TRM check handled in toCOP (returns 0 if missing)
-
-        // Real Return
-        const prev = prevSnapMap.get(chap.accountId);
-        const netFlow = movementTotalsByAccount.get(chap.accountId) ?? 0;
-        const { realMonthlyReturn } = calculateRealReturn(chap.balance, prev?.balance, netFlow);
-        nonSalaryRealReturnsCOP += toCOP(realMonthlyReturn, account.currency, period);
-
-        // Projected Return
-        if (chap.effectiveAnnualRateProjected) {
-            const { projectedMonthlyReturn } = calculateProjectedReturn(chap.balance, chap.effectiveAnnualRateProjected);
-            nonSalaryProjectedReturnsCOP += toCOP(projectedMonthlyReturn, account.currency, period);
-        }
-    });
-
-    // 2. Expenses
-    const expensesTotal = expenses.reduce((sum, e) => sum + toCOP(e.amount, e.currency, period), 0);
-
-    // 3. Debt
-    const debtTotal = debts.reduce((sum, d) => sum + getNetDebtAmount(d, period), 0);
-    const prevDebtTotal = prevDebts.reduce((sum, d) => sum + getNetDebtAmount(d, period), 0);
-
-    // 4. Liquid & Capital
-    let liquidTotal = 0;
-    let capitalTotal = 0;
-
-    snapshots.forEach(snap => {
-        const account = accounts.find(a => a.id === snap.accountId);
-        if (!account) return;
-
-        const valCOP = toCOP(snap.balance, account.currency, period);
-
-        const categories = getAccountCategories(account);
-        if (categories.some(category => LIQUID_CATEGORIES.includes(category))) {
-            liquidTotal += valCOP;
-        }
-        if (categories.some(category => CAPITAL_CATEGORIES.includes(category))) {
-            capitalTotal += valCOP;
-        }
-    });
-
-    // 5. Capital Delta and Income
-    let prevCapitalTotal = 0;
-    prevSnapshots.forEach(snap => {
-        const account = accounts.find(a => a.id === snap.accountId);
-        const categories = account ? getAccountCategories(account) : [];
-        if (account && categories.some(category => CAPITAL_CATEGORIES.includes(category))) {
-            prevCapitalTotal += toCOP(snap.balance, account.currency, period);
-        }
-    });
-
-    const netCapitalTotal = capitalTotal - debtTotal;
-    const netPrevCapitalTotal = prevCapitalTotal - prevDebtTotal;
-
-    // Total Income = Returns (calculated) to avoid dependency on manual incomes
-    const incomeTotal = nonSalaryRealReturnsCOP;
-
-    // Total Non-Salary Real = Total Income - Salary
-    const incomeNonSalaryReal = incomeTotal - salaryIncomeCOP;
-
-    // 6. Balance
-    const balance = incomeTotal - expensesTotal;
-    const balanceWithoutSalary = incomeNonSalaryReal - expensesTotal;
-
-    // 7. Unspecified Expenses (Residuo)
-    // Option B from Prompt: (SaldoInicial + Ingresos) - EgresosRegistrados - SaldoFinal
-    // But SaldoInicial is Capital(T-1) and SaldoFinal is Capital(T).
-    // Let's use Option A if PlannedExpenses exists, else use Option B-ish or just 0 for now.
-    // The user suggested: "Unspecified = max(0, totalExpenses - plannedExpenses)" (Option A)
-    // Or "Ahorro Real" approach.
-    // Let's implement Option A (Placeholder for plannedExpenses which defaults to 0)
-    const plannedExpenses = 0; // TODO: Add to Period model?
-    const unspecifiedExpense = Math.max(0, expensesTotal - plannedExpenses); // This logic in prompt A was weird. 
-    // Wait, prompt said: "unspecifiedExpenseCOP(period) = max(0, totalExpensesCOP(period) - plannedExpensesCOP(period))"
-    // "Interpretación usuario: valores derivados a partir de restas entre ingresos reales vs egresos planeados".
-    // Actually, let's stick to the prompt's fallback logic if no planned expenses:
-    // "Propuesta MVP: Ingresos Reales - Egresos Reales - Ahorro Real (Delta Patrimonial). Si el número es positivo, es gasto no trackeado."
-    // Delta Patrimonial = Capital(T) - Capital(T-1).
-    // ExpenseUnspecified = IncomeTotal - ExpensesTotal - (Capital(T) - Capital(T-1)). 
-    // Logically: Income - Expense = Savings (Flow). Delta Capital is Savings (Stock). Difference is leakage.
-    // Ensure we have Capital(T-1). We verify via prevSnapshots.
-
-    const savingsFlow = incomeTotal - expensesTotal; // Theoretical savings
-    const savingsStock = netCapitalTotal - netPrevCapitalTotal; // Actual savings (Delta Capital)
-
-    const possibleLeakage = savingsFlow - savingsStock;
-    // If Flow says we saved 1M, but Stock only went up 800k, then 200k leaked.
-    // Leakage = Flow - Stock.
-
+    const realMonthlyRate = realMonthlyReturn / previousBalance;
     return {
-        incomeTotal,
-        incomeSalary: salaryIncomeCOP,
-        incomeNonSalaryReal,
-        incomeNonSalaryProjected: nonSalaryProjectedReturnsCOP,
-        expensesTotal,
-        balance,
-        balanceWithoutSalary,
-        debtTotal,
-        liquidTotal,
-        capitalTotal: netCapitalTotal,
-        unspecifiedExpense: possibleLeakage > 0 ? possibleLeakage : 0, // Only if positive
-        plannedExpenses
+        realMonthlyReturn,
+        realMonthlyRate,
+        realEA: Math.pow(1 + realMonthlyRate, 12) - 1,
     };
 }

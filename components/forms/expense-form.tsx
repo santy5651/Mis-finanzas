@@ -1,6 +1,6 @@
 'use client';
 
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { expenseSchema } from '@/lib/validators';
 import { z } from 'zod';
@@ -14,6 +14,9 @@ import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { saveExpenseWithLedger } from '@/lib/finance/ledger';
+import { dateInsidePeriod } from '@/lib/finance/period';
+import { useState } from 'react';
 
 type ExpenseFormValues = z.infer<typeof expenseSchema>;
 
@@ -25,13 +28,19 @@ interface ExpenseFormProps {
 export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
     const { periodId } = useActivePeriod();
     const entities = useLiveQuery(() => db.entities.toArray()) || [];
+    const accounts = useLiveQuery(() => db.accounts.filter(account => account.isActive).toArray()) || [];
+    const obligations = useLiveQuery(
+        () => db.obligations.filter(item => item.isActive && item.direction === 'PAYABLE' && item.type === 'CREDIT_CARD').toArray(),
+    ) || [];
+    const period = useLiveQuery(() => db.periods.get(periodId), [periodId]);
+    const [saveError, setSaveError] = useState<string | null>(null);
 
     const form = useForm<ExpenseFormValues>({
-        resolver: zodResolver(expenseSchema),
+        resolver: zodResolver(expenseSchema) as Resolver<ExpenseFormValues>,
         defaultValues: {
             id: defaultValues?.id ?? uuidv4(),
             periodId: defaultValues?.periodId ?? periodId,
-            date: defaultValues?.date ?? new Date().toISOString().split('T')[0],
+            date: defaultValues?.date ?? dateInsidePeriod(periodId),
             currency: defaultValues?.currency ?? 'COP',
             amount: defaultValues?.amount ?? 0,
             reason: defaultValues?.reason ?? '',
@@ -40,22 +49,43 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
             entityId: defaultValues?.entityId ?? undefined,
             isRecurring: defaultValues?.isRecurring ?? false,
             notes: defaultValues?.notes ?? undefined,
+            paymentAccountId: defaultValues?.paymentAccountId ?? undefined,
+            obligationId: defaultValues?.obligationId ?? undefined,
+            financialEventId: defaultValues?.financialEventId ?? undefined,
         }
     });
 
     useEffect(() => {
         if (periodId && !defaultValues?.id) {
             form.setValue('periodId', periodId);
+            form.setValue('date', dateInsidePeriod(periodId));
         }
     }, [periodId, form, defaultValues]);
 
     async function onSubmit(data: ExpenseFormValues) {
+        setSaveError(null);
         try {
-            await db.expenses.put(data);
+            if (period?.status === 'CLOSED') {
+                setSaveError('Reabre el mes antes de registrar o editar gastos.');
+                return;
+            }
+            if (data.method === 'CREDIT_CARD') {
+                if (!data.obligationId) {
+                    setSaveError('Selecciona la tarjeta que utilizaste.');
+                    return;
+                }
+                await saveExpenseWithLedger(data, { kind: 'CREDIT_CARD', obligationId: data.obligationId });
+            } else {
+                if (!data.paymentAccountId) {
+                    setSaveError('Selecciona la cuenta desde la que salió el dinero.');
+                    return;
+                }
+                await saveExpenseWithLedger(data, { kind: 'ACCOUNT', accountId: data.paymentAccountId });
+            }
             form.reset({
                 id: uuidv4(),
                 periodId,
-                date: new Date().toISOString().split('T')[0],
+                date: dateInsidePeriod(periodId),
                 currency: 'COP',
                 amount: 0,
                 reason: '',
@@ -66,8 +96,12 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
             onSuccess?.();
         } catch (error) {
             console.error('Failed to save expense:', error);
+            setSaveError(error instanceof Error ? error.message : 'No fue posible guardar el gasto.');
         }
     }
+
+    const selectedMethod = useWatch({ control: form.control, name: 'method' });
+    const selectedCurrency = useWatch({ control: form.control, name: 'currency' });
 
     return (
         <Form {...form}>
@@ -190,6 +224,46 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                     />
                 </div>
 
+                {selectedMethod === 'CREDIT_CARD' ? (
+                    <FormField
+                        control={form.control}
+                        name="obligationId"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Tarjeta utilizada</FormLabel>
+                                <Select onValueChange={field.onChange} value={field.value || ''}>
+                                    <FormControl><SelectTrigger><SelectValue placeholder="Selecciona una tarjeta" /></SelectTrigger></FormControl>
+                                    <SelectContent>
+                                        {obligations.filter(item => item.currency === selectedCurrency).map(item => (
+                                            <SelectItem key={item.id} value={item.id}>{item.name} · {entities.find(entity => entity.id === item.entityId)?.name ?? item.currency}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                ) : (
+                    <FormField
+                        control={form.control}
+                        name="paymentAccountId"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Cuenta de pago</FormLabel>
+                                <Select onValueChange={field.onChange} value={field.value || ''}>
+                                    <FormControl><SelectTrigger><SelectValue placeholder="Selecciona una cuenta" /></SelectTrigger></FormControl>
+                                    <SelectContent>
+                                        {accounts.filter(item => item.currency === selectedCurrency).map(item => (
+                                            <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                )}
+
                 <FormField
                     control={form.control}
                     name="isRecurring"
@@ -236,7 +310,8 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                     )}
                 />
 
-                <Button type="submit" className="w-full">Guardar Egreso</Button>
+                {saveError && <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{saveError}</div>}
+                <Button type="submit" className="w-full">Guardar gasto</Button>
             </form>
         </Form>
     );

@@ -6,6 +6,7 @@ import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { Button } from '@/components/ui/button';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { addMonths, format, parse, subMonths } from 'date-fns';
+import { es } from 'date-fns/locale';
 
 export function PeriodSelector() {
     const { periodId, setPeriod } = useActivePeriod();
@@ -21,30 +22,29 @@ export function PeriodSelector() {
     };
 
     return (
-        <div className="flex items-center space-x-2">
-            <Button variant="outline" size="icon" onClick={handlePrev}>
+        <div className="flex items-center gap-1.5 rounded-xl border bg-white p-1 shadow-sm">
+            <Button variant="ghost" size="icon" onClick={handlePrev} aria-label="Mes anterior">
                 <ChevronLeft className="h-4 w-4" />
             </Button>
-            <div className="w-[120px]">
+            <div className="w-[145px] sm:w-[165px]">
                 <Select value={periodId} onValueChange={setPeriod}>
-                    <SelectTrigger>
-                        <SelectValue>{periodId}</SelectValue>
+                    <SelectTrigger className="border-0 bg-transparent capitalize shadow-none focus-visible:ring-0">
+                        <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                        {/* Generate some recent periods */}
-                        {Array.from({ length: 12 }).map((_, i) => {
-                            const date = subMonths(new Date(), i);
+                        {Array.from({ length: 37 }).map((_, i) => {
+                            const date = addMonths(new Date(), 12 - i);
                             const val = format(date, 'yyyy-MM');
                             return (
-                                <SelectItem key={val} value={val}>
-                                    {val}
+                                <SelectItem key={val} value={val} className="capitalize">
+                                    {format(date, 'MMMM yyyy', { locale: es })}
                                 </SelectItem>
                             );
                         })}
                     </SelectContent>
                 </Select>
             </div>
-            <Button variant="outline" size="icon" onClick={handleNext}>
+            <Button variant="ghost" size="icon" onClick={handleNext} aria-label="Mes siguiente">
                 <ChevronRight className="h-4 w-4" />
             </Button>
         </div>

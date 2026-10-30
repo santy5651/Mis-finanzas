@@ -15,12 +15,34 @@ export type ExpenseMethod = 'DEBIT' | 'CREDIT_CARD' | 'CASH' | 'TRANSFER' | 'OTH
 export type DebtType = 'CREDIT_CARD' | 'PERSONAL' | 'LOAN' | 'OTHER';
 export type ProjectedIncomeType = 'FIXED_EA' | 'VARIABLE_MONTHLY' | 'ONE_TIME' | 'SALARY';
 export type AccountMovementType = 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER_IN' | 'TRANSFER_OUT';
+export type PeriodStatus = 'OPEN' | 'CLOSED';
+export type RateSource = 'SFC' | 'MANUAL';
+export type ObligationDirection = 'PAYABLE' | 'RECEIVABLE';
+export type ObligationType = DebtType | 'RECEIVABLE';
+export type FinancialEventType =
+  | 'INCOME'
+  | 'EXPENSE'
+  | 'TRANSFER'
+  | 'PASSIVE_RETURN'
+  | 'OBLIGATION_PAYMENT'
+  | 'RECEIVABLE_LOAN'
+  | 'RECEIVABLE_COLLECTION'
+  | 'ADJUSTMENT'
+  | 'LEGACY_MOVEMENT';
+export type PlannedCashFlowType = 'SALARY' | 'OTHER_INCOME' | 'EXPENSE';
 
 export interface Period {
   id: string; // "YYYY-MM"
   year: number;
   month: number;
-  usdCopRate: number | null; // TRM Manual
+  usdCopRate: number | null;
+  status?: PeriodStatus;
+  closedAt?: string;
+  trmDate?: string;
+  trmValidFrom?: string;
+  trmValidTo?: string;
+  trmSource?: RateSource;
+  acknowledgedUnexplained?: boolean;
 }
 
 export interface Entity {
@@ -51,6 +73,9 @@ export interface AccountSnapshot {
   projectedRateMonthly?: number; // Percent (2 = 2% mensual)
   projectedAmount?: number; // Used for salary or one-time
   projectedConcept?: string;
+  usdCopRate?: number;
+  trmDate?: string;
+  trmSource?: RateSource;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -67,6 +92,8 @@ export interface Income {
   isSalary: boolean;
   method?: string;
   notes?: string;
+  accountId?: string;
+  financialEventId?: string;
 }
 
 export interface Expense {
@@ -81,6 +108,9 @@ export interface Expense {
   installments: number; // Defecto 1
   isRecurring?: boolean; // Gasto mensual persistente
   notes?: string;
+  paymentAccountId?: string;
+  obligationId?: string;
+  financialEventId?: string;
 }
 
 export interface Debt {
@@ -146,4 +176,100 @@ export interface AccountMovement {
   transferGroupId?: string;
   notes?: string;
   createdAt: string;
+}
+
+export interface AccountPlan {
+  id: string;
+  periodId: string;
+  accountId: string;
+  concept: string;
+  type: 'FIXED_EA' | 'VARIABLE_MONTHLY';
+  rateEA?: number;
+  rateMonthly?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlannedCashFlow {
+  id: string;
+  periodId: string;
+  accountId: string;
+  type: PlannedCashFlowType;
+  concept: string;
+  amount: number;
+  currency: Currency;
+  isRecurring: boolean;
+  sourcePlanId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FinancialEvent {
+  id: string;
+  periodId: string;
+  date: string;
+  type: FinancialEventType;
+  concept: string;
+  entityId?: string | null;
+  expenseId?: string;
+  incomeId?: string;
+  incomeKind?: 'SALARY' | 'OTHER_INCOME';
+  plannedCashFlowId?: string;
+  obligationId?: string;
+  installments?: number;
+  effectiveExchangeRate?: number;
+  notes?: string;
+  legacySourceId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Signed amount in the account's native currency. Positive enters; negative leaves. */
+export interface AccountEntry {
+  id: string;
+  eventId: string;
+  periodId: string;
+  accountId: string;
+  amount: number;
+  currency: Currency;
+  createdAt: string;
+}
+
+export interface Obligation {
+  id: string;
+  entityId: string;
+  name: string;
+  direction: ObligationDirection;
+  type: ObligationType;
+  currency: Currency;
+  dueDay?: number;
+  notes?: string;
+  legacySeriesId?: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Signed amount: positive increases the outstanding balance; negative reduces it. */
+export interface ObligationEntry {
+  id: string;
+  eventId: string;
+  periodId: string;
+  obligationId: string;
+  amount: number;
+  currency: Currency;
+  createdAt: string;
+}
+
+export interface ObligationSnapshot {
+  id: string;
+  periodId: string;
+  obligationId: string;
+  balance: number;
+  usdCopRate?: number;
+  trmDate?: string;
+  trmSource?: RateSource;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
 }

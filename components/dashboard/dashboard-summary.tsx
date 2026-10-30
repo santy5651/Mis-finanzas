@@ -1,607 +1,98 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { format, parse, subMonths } from 'date-fns';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { ArrowDownRight, ArrowUpRight, CircleDollarSign, Landmark, ReceiptText, Sparkles, WalletCards } from 'lucide-react';
 import { db } from '@/lib/db/db';
+import type { Currency } from '@/lib/types';
+import { calculateAccountReconciliation, calculateFxEffect, expectedPassiveReturn } from '@/lib/finance/reconciliation';
+import { convertToCop, resolveUsdCopRate } from '@/lib/finance/currency';
 import { useActivePeriod } from '@/lib/hooks/use-active-period';
-import {
-    calculatePeriodSummary,
-    calculateProjectedReturn,
-    calculateRealReturn,
-    toCOP
-} from '@/lib/calculations/financials';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { subMonths, parse, format } from 'date-fns';
-import { Loader2, TrendingUp, TrendingDown, DollarSign, Wallet, CreditCard, PiggyBank, Briefcase } from 'lucide-react';
-import { formatMoney } from '@/lib/utils';
-
-function calculateSnapshotProjectedAmount(snapshot: any) {
-    const type = snapshot.projectedIncomeType ?? (snapshot.effectiveAnnualRateProjected ? 'FIXED_EA' : null);
-    if (!type) return { amount: 0, type: null };
-    if (type === 'SALARY' || type === 'ONE_TIME') {
-        return { amount: snapshot.projectedAmount ?? 0, type };
-    }
-    if (type === 'FIXED_EA') {
-        const ea = snapshot.effectiveAnnualRateProjected ?? 0;
-        const monthlyRate = Math.pow(1 + ea, 1 / 12) - 1;
-        return { amount: snapshot.balance * monthlyRate, type };
-    }
-    const monthly = snapshot.projectedRateMonthly ?? 0;
-    return { amount: snapshot.balance * (monthly / 100), type };
-}
-
-function calculateSnapshotProjectedReturnOnly(snapshot: any) {
-    const type = snapshot.projectedIncomeType ?? (snapshot.effectiveAnnualRateProjected ? 'FIXED_EA' : null);
-    if (!type) return 0;
-    if (type === 'FIXED_EA') {
-        const ea = snapshot.effectiveAnnualRateProjected ?? 0;
-        const monthlyRate = Math.pow(1 + ea, 1 / 12) - 1;
-        return snapshot.balance * monthlyRate;
-    }
-    if (type === 'VARIABLE_MONTHLY') {
-        const monthly = snapshot.projectedRateMonthly ?? 0;
-        return snapshot.balance * (monthly / 100);
-    }
-    return 0;
-}
+import { formatCurrency } from '@/lib/utils';
 
 export function DashboardSummary() {
     const { periodId } = useActivePeriod();
-    const [sortKey, setSortKey] = useState<'accountName' | 'entityName' | 'balance' | 'prevBalance' | 'balanceDiff' | 'balanceDiffPct' | 'projected' | 'real' | 'diff' | 'diffPct'>('accountName');
-    const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
-    const [showReturns, setShowReturns] = useState(true);
-    const [expandReturns, setExpandReturns] = useState(false);
-
+    const previousPeriodId = useMemo(() => format(subMonths(parse(periodId, 'yyyy-MM', new Date()), 1), 'yyyy-MM'), [periodId]);
     const data = useLiveQuery(async () => {
-        if (!periodId) return null;
-
-        const currentDate = parse(periodId, 'yyyy-MM', new Date());
-        const prevDate = subMonths(currentDate, 1);
-        const prevPrevDate = subMonths(currentDate, 2);
-        const prevPeriodId = format(prevDate, 'yyyy-MM');
-        const prevPrevPeriodId = format(prevPrevDate, 'yyyy-MM');
-
-        const period = await db.periods.get(periodId);
-        const safePeriod = period || { id: periodId, year: currentDate.getFullYear(), month: currentDate.getMonth() + 1, usdCopRate: null };
-        const prevPeriod = await db.periods.get(prevPeriodId);
-        const safePrevPeriod = prevPeriod || { id: prevPeriodId, year: prevDate.getFullYear(), month: prevDate.getMonth() + 1, usdCopRate: null };
-
-        const [
-            accounts,
-            snapshots,
-            prevSnapshots,
-            prevPrevSnapshots,
-            incomes,
-            prevIncomes,
-            expenses,
-            prevExpenses,
-            debts,
-            prevDebts,
-            prevPrevDebts,
-            entities,
-            accountMovements,
-            prevAccountMovements,
-            projectedIncomeItems,
-            prevProjectedIncomeItems
-        ] = await Promise.all([
-            db.accounts.filter(a => a.isActive).toArray(),
-            db.accountSnapshots.where('periodId').equals(periodId).toArray(),
-            db.accountSnapshots.where('periodId').equals(prevPeriodId).toArray(),
-            db.accountSnapshots.where('periodId').equals(prevPrevPeriodId).toArray(),
-            db.incomes.where('periodId').equals(periodId).toArray(),
-            db.incomes.where('periodId').equals(prevPeriodId).toArray(),
-            db.expenses.where('periodId').equals(periodId).toArray(),
-            db.expenses.where('periodId').equals(prevPeriodId).toArray(),
-            db.debts.where('periodId').equals(periodId).toArray(),
-            db.debts.where('periodId').equals(prevPeriodId).toArray(),
-            db.debts.where('periodId').equals(prevPrevPeriodId).toArray(),
-            db.entities.toArray(),
-            db.accountMovements.where('periodId').equals(periodId).toArray(),
-            db.accountMovements.where('periodId').equals(prevPeriodId).toArray(),
-            db.projectedIncomeItems.where('periodId').equals(periodId).toArray(),
-            db.projectedIncomeItems.where('periodId').equals(prevPeriodId).toArray()
+        const [accounts, entities, snapshots, previousSnapshots, entries, events, plans, plannedFlows, expenses, period, previousPeriod, obligations, obligationSnapshots, previousObligationSnapshots, obligationEntries] = await Promise.all([
+            db.accounts.toArray(), db.entities.toArray(),
+            db.accountSnapshots.where('periodId').equals(periodId).toArray(), db.accountSnapshots.where('periodId').equals(previousPeriodId).toArray(),
+            db.accountEntries.where('periodId').equals(periodId).toArray(), db.financialEvents.where('periodId').equals(periodId).toArray(),
+            db.accountPlans.where('periodId').equals(periodId).toArray(), db.plannedCashFlows.where('periodId').equals(periodId).toArray(),
+            db.expenses.where('periodId').equals(periodId).toArray(), db.periods.get(periodId), db.periods.get(previousPeriodId),
+            db.obligations.toArray(), db.obligationSnapshots.where('periodId').equals(periodId).toArray(), db.obligationSnapshots.where('periodId').equals(previousPeriodId).toArray(), db.obligationEntries.where('periodId').equals(periodId).toArray(),
         ]);
-
-        const summary = calculatePeriodSummary(
-            safePeriod,
-            incomes,
-            expenses,
-            debts,
-            prevDebts,
-            accounts,
-            snapshots,
-            prevSnapshots,
-            accountMovements
-        );
-
-        const prevSummary = calculatePeriodSummary(
-            safePrevPeriod,
-            prevIncomes,
-            prevExpenses,
-            prevDebts,
-            prevPrevDebts,
-            accounts,
-            prevSnapshots,
-            prevPrevSnapshots,
-            prevAccountMovements
-        );
-
-        const entityMap = new Map(entities.map(e => [e.id, e.name]));
-        const prevSnapMap = new Map(prevSnapshots.map(s => [s.accountId, s]));
-
-        const movementTotalsByAccount = new Map<string, number>();
-        accountMovements.forEach(movement => {
-            const sign = (movement.type === 'DEPOSIT' || movement.type === 'TRANSFER_IN') ? 1 : -1;
-            const prev = movementTotalsByAccount.get(movement.accountId) ?? 0;
-            movementTotalsByAccount.set(movement.accountId, prev + (sign * movement.amount));
+        const accountMap = new Map(accounts.map(item => [item.id, item]));
+        const entityMap = new Map(entities.map(item => [item.id, item.name]));
+        const eventMap = new Map(events.map(item => [item.id, item]));
+        const previousMap = new Map(previousSnapshots.map(item => [item.accountId, item]));
+        const rows = snapshots.flatMap(snapshot => {
+            const account = accountMap.get(snapshot.accountId); if (!account) return [];
+            const previous = previousMap.get(account.id);
+            const calculation = calculateAccountReconciliation(snapshot, previous, entries.filter(item => item.accountId === account.id), events);
+            const plan = plans.find(item => item.accountId === account.id);
+            const valuationSnapshot = account.currency === 'USD'
+                ? { ...snapshot, usdCopRate: resolveUsdCopRate(period, snapshot) ?? undefined }
+                : snapshot;
+            return [{ account, entity: entityMap.get(account.entityId) ?? 'Sin entidad', snapshot, previous, expected: expectedPassiveReturn(previous?.balance ?? snapshot.balance, plan), fxEffect: account.currency === 'USD' ? calculateFxEffect(previous, valuationSnapshot) : 0, ...calculation }];
         });
-        const rows = snapshots.map(snap => {
-            const account = accounts.find(acc => acc.id === snap.accountId);
-            if (!account) return null;
-            const prev = prevSnapMap.get(snap.accountId);
-            const netFlow = movementTotalsByAccount.get(snap.accountId) ?? 0;
-            const real = calculateRealReturn(snap.balance, prev?.balance, netFlow).realMonthlyReturn;
-            const projected = snap.effectiveAnnualRateProjected
-                ? calculateProjectedReturn(snap.balance, snap.effectiveAnnualRateProjected).projectedMonthlyReturn
-                : 0;
-            const needsTrm = account.currency === 'USD' && !safePeriod.usdCopRate;
-            if (needsTrm) {
-                return {
-                    id: account.id,
-                    accountName: account.name,
-                    entityName: entityMap.get(account.entityId) || 'Sin Entidad',
-                    balance: null,
-                    prevBalance: null,
-                    balanceDiff: null,
-                    real: null,
-                    projected: null,
-                    diff: null,
-                    diffPct: null
-                };
-            }
-
-            const realCop = toCOP(real, account.currency, safePeriod);
-            const projCop = toCOP(projected, account.currency, safePeriod);
-            const balanceCop = toCOP(snap.balance, account.currency, safePeriod);
-            const prevBalanceCop = toCOP(prev?.balance ?? 0, account.currency, safePeriod);
-            const balanceDiff = balanceCop - prevBalanceCop;
-            const diff = realCop - projCop;
-            const diffPct = projCop !== 0 ? (diff / Math.abs(projCop)) * 100 : null;
-            const balanceDiffPct = prevBalanceCop !== 0 ? (balanceDiff / Math.abs(prevBalanceCop)) * 100 : null;
-
-            return {
-                id: account.id,
-                accountName: account.name,
-                entityName: entityMap.get(account.entityId) || 'Sin Entidad',
-                balance: balanceCop,
-                prevBalance: prevBalanceCop,
-                balanceDiff,
-                real: realCop,
-                projected: projCop,
-                diff,
-                diffPct,
-                balanceDiffPct
-            };
-        }).filter(Boolean);
-
-        const projectedNonSalary = snapshots.reduce((sum, snap) => {
-            const account = accounts.find(acc => acc.id === snap.accountId);
-            if (!account) return sum;
-            const amount = calculateSnapshotProjectedReturnOnly(snap);
-            return sum + toCOP(amount, account.currency, safePeriod);
-        }, 0);
-
-        const prevProjectedNonSalary = prevSnapshots.reduce((sum, snap) => {
-            const account = accounts.find(acc => acc.id === snap.accountId);
-            if (!account) return sum;
-            const amount = calculateSnapshotProjectedReturnOnly(snap);
-            return sum + toCOP(amount, account.currency, safePrevPeriod);
-        }, 0);
-
-        const prevProjectedIncrease = prevProjectedNonSalary + prevSummary.balance;
-        const actualIncreaseThis = summary.capitalTotal - prevSummary.capitalTotal;
-        const projectionDelta = actualIncreaseThis - prevProjectedIncrease;
-        const projectedIncomeBreakdown = snapshots.reduce((acc, snap) => {
-            const account = accounts.find(acc => acc.id === snap.accountId);
-            if (!account) return acc;
-            const { amount, type } = calculateSnapshotProjectedAmount(snap);
-            const amountCop = toCOP(amount, account.currency, safePeriod);
-            if (type === 'SALARY') {
-                acc.salary += amountCop;
-            } else {
-                acc.nonSalary += amountCop;
-            }
-            return acc;
-        }, { salary: 0, nonSalary: 0 });
-        projectedIncomeItems.forEach(item => {
-            const amountCop = toCOP(item.amount, item.currency, safePeriod);
-            if (item.type === 'SALARY') {
-                projectedIncomeBreakdown.salary += amountCop;
-            } else {
-                projectedIncomeBreakdown.nonSalary += amountCop;
-            }
-        });
-        const projectedIncomeTotal = projectedIncomeBreakdown.salary + projectedIncomeBreakdown.nonSalary;
-        const prevProjectedIncomeTotal = prevSnapshots.reduce((sum, snap) => {
-            const account = accounts.find(acc => acc.id === snap.accountId);
-            if (!account) return sum;
-            const { amount } = calculateSnapshotProjectedAmount(snap);
-            return sum + toCOP(amount, account.currency, safePrevPeriod);
-        }, 0) + prevProjectedIncomeItems.reduce((sum, item) => {
-            return sum + toCOP(item.amount, item.currency, safePrevPeriod);
-        }, 0);
-
-        return {
-            summary,
-            prevSummary,
-            rows,
-            prevProjectedIncrease,
-            actualIncreaseThis,
-            projectionDelta,
-            projectedIncomeTotal,
-            projectedIncomeSalaryTotal: projectedIncomeBreakdown.salary,
-            projectedIncomeNonSalaryTotal: projectedIncomeBreakdown.nonSalary,
-            projectedNonSalary,
-            prevProjectedIncomeTotal
+        const assets = rows.reduce((sum, row) => sum + convertToCop(row.snapshot.balance, row.account.currency, period, row.snapshot), 0);
+        const previousAssets = previousSnapshots.reduce((sum, snapshot) => { const account = accountMap.get(snapshot.accountId); return account ? sum + convertToCop(snapshot.balance, account.currency, previousPeriod, snapshot) : sum; }, 0);
+        const obligationBalance = (id: string) => {
+            const current = obligationSnapshots.find(item => item.obligationId === id);
+            if (current) return current.balance;
+            const previous = previousObligationSnapshots.find(item => item.obligationId === id)?.balance ?? 0;
+            return Math.max(0, previous + obligationEntries.filter(item => item.obligationId === id).reduce((sum, item) => sum + item.amount, 0));
         };
-    }, [periodId]);
+        const payables = obligations.filter(item => item.direction === 'PAYABLE').reduce((sum, item) => sum + convertToCop(obligationBalance(item.id), item.currency, period), 0);
+        const receivables = obligations.filter(item => item.direction === 'RECEIVABLE').reduce((sum, item) => sum + convertToCop(obligationBalance(item.id), item.currency, period), 0);
+        const previousPayables = obligations.filter(item => item.direction === 'PAYABLE').reduce((sum, item) => sum + convertToCop(previousObligationSnapshots.find(snapshot => snapshot.obligationId === item.id)?.balance ?? 0, item.currency, previousPeriod), 0);
+        const previousReceivables = obligations.filter(item => item.direction === 'RECEIVABLE').reduce((sum, item) => sum + convertToCop(previousObligationSnapshots.find(snapshot => snapshot.obligationId === item.id)?.balance ?? 0, item.currency, previousPeriod), 0);
+        const convertEntry = (entry: typeof entries[number]) => convertToCop(entry.amount, entry.currency, period, snapshots.find(item => item.accountId === entry.accountId));
+        const incomeEntries = entries.filter(entry => eventMap.get(entry.eventId)?.type === 'INCOME');
+        const isSalaryEvent = (eventId: string) => {
+            const event = eventMap.get(eventId);
+            if (event?.incomeKind) return event.incomeKind === 'SALARY';
+            const planned = plannedFlows.find(item => item.id === event?.plannedCashFlowId);
+            return planned?.type === 'SALARY' || /salario|n[oó]mina/i.test(event?.concept ?? '');
+        };
+        const actualSalary = incomeEntries.filter(entry => isSalaryEvent(entry.eventId)).reduce((sum, entry) => sum + convertEntry(entry), 0);
+        const actualOtherIncome = incomeEntries.filter(entry => !isSalaryEvent(entry.eventId)).reduce((sum, entry) => sum + convertEntry(entry), 0);
+        const actualExternalIncome = actualSalary + actualOtherIncome;
+        const actualPassiveReturn = entries.filter(entry => eventMap.get(entry.eventId)?.type === 'PASSIVE_RETURN').reduce((sum, entry) => sum + convertEntry(entry), 0);
+        const cashFlow = entries.filter(entry => eventMap.get(entry.eventId)?.type !== 'TRANSFER').reduce((sum, entry) => sum + convertEntry(entry), 0);
+        const recordedExpenses = expenses.reduce((sum, item) => sum + convertToCop(item.amount, item.currency, period), 0);
+        const obligationOnlyExpenses = events.filter(event => event.type === 'EXPENSE' && !event.expenseId).reduce((sum, event) => {
+            const accountImpact = entries.filter(entry => entry.eventId === event.id && entry.amount < 0).reduce((entrySum, entry) => entrySum + Math.abs(convertToCop(entry.amount, entry.currency, period)), 0);
+            const obligationImpact = obligationEntries.filter(entry => entry.eventId === event.id && entry.amount > 0).reduce((entrySum, entry) => entrySum + convertToCop(entry.amount, entry.currency, period), 0);
+            const impact = accountImpact + obligationImpact;
+            return sum + impact;
+        }, 0);
+        const actualExpenses = recordedExpenses + obligationOnlyExpenses;
+        const expectedExternalIncome = plannedFlows.filter(item => item.type !== 'EXPENSE').reduce((sum, item) => sum + convertToCop(item.amount, item.currency, period), 0);
+        const expectedExpenses = plannedFlows.filter(item => item.type === 'EXPENSE').reduce((sum, item) => sum + convertToCop(item.amount, item.currency, period), 0);
+        const expectedReturn = rows.reduce((sum, row) => sum + convertToCop(row.expected, row.account.currency, period, row.snapshot), 0);
+        const fxEffect = rows.reduce((sum, row) => sum + row.fxEffect, 0);
+        const netWorth = assets + receivables - payables;
+        const previousNetWorth = previousAssets + previousReceivables - previousPayables;
+        return { rows, netWorth, variation: netWorth - previousNetWorth, assets, payables, receivables, actualExternalIncome, actualSalary, actualOtherIncome, expectedExternalIncome, actualPassiveReturn, expectedReturn, actualExpenses, expectedExpenses, cashFlow, fxEffect, projectedNext: netWorth + expectedExternalIncome + expectedReturn - expectedExpenses };
+    }, [periodId, previousPeriodId]);
+    const [sort, setSort] = useState<'balance' | 'unexplained' | 'name'>('balance');
+    if (!data) return <div className="h-48 animate-pulse rounded-xl bg-slate-100" />;
+    const rows = [...data.rows].sort((a, b) => sort === 'name' ? a.account.name.localeCompare(b.account.name, 'es') : sort === 'unexplained' ? Math.abs(b.unexplained) - Math.abs(a.unexplained) : b.snapshot.balance - a.snapshot.balance);
+    const variationPositive = data.variation >= 0;
 
-    const rows = data?.rows || [];
-    const sortedRows = useMemo(() => {
-        const copy = [...rows];
-        copy.sort((a, b) => {
-            const aVal = a[sortKey];
-            const bVal = b[sortKey];
-            if (aVal === null && bVal === null) return 0;
-            if (aVal === null) return 1;
-            if (bVal === null) return -1;
-            if (typeof aVal === 'string' && typeof bVal === 'string') {
-                return sortDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-            }
-            if (typeof aVal === 'number' && typeof bVal === 'number') {
-                return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
-            }
-            return 0;
-        });
-        return copy;
-    }, [rows, sortKey, sortDir]);
-
-    const toggleSort = (key: typeof sortKey) => {
-        if (sortKey === key) {
-            setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'));
-        } else {
-            setSortKey(key);
-            setSortDir('asc');
-        }
-    };
-
-    const sortIndicator = (key: typeof sortKey) => {
-        if (sortKey !== key) return '';
-        return sortDir === 'asc' ? ' ^' : ' v';
-    };
-
-    if (!data) {
-        return <div className="flex justify-center p-8"><Loader2 className="animate-spin" /></div>;
-    }
-
-    const projectedIncomeNet = data.projectedIncomeTotal;
-    const projectedIncomeDescription = `Salariales: $${formatMoney(data.projectedIncomeSalaryTotal)} | No salariales: $${formatMoney(data.projectedIncomeNonSalaryTotal)}`;
-    const projectedCapitalNext = data.summary.capitalTotal + projectedIncomeNet - data.summary.expensesTotal;
-    const deltaColor = data.projectionDelta >= 0 ? 'text-green-600' : 'text-red-600';
-    const realIncome = data.actualIncreaseThis;
-    const balanceFromSnapshots = realIncome - data.summary.expensesTotal;
-    const descuadreValue = realIncome - (data.prevProjectedIncomeTotal - data.prevSummary.expensesTotal);
-    const descuadreColor = descuadreValue >= 0 ? 'text-green-600' : 'text-red-600';
-
-    return (
-        <div className="space-y-8">
-            <div className="rounded-xl border bg-muted/20 p-4 md:p-6">
-                <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-semibold">Flujo del Mes</h2>
-                </div>
-                <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-                    <SummaryCard
-                        title="Ingresos Reales"
-                        value={realIncome}
-                        icon={TrendingUp}
-                        formula="Capital total actual - Capital total anterior"
-                        description="Crecimiento real del patrimonio"
-                        color="text-green-600"
-                    />
-                    <SummaryCard
-                        title="Ingresos Proyectados"
-                        value={projectedIncomeNet}
-                        icon={TrendingUp}
-                        formula="Suma de ingresos proyectados del mes"
-                        description={projectedIncomeDescription}
-                        color="text-blue-600"
-                    />
-                    <SummaryCard
-                        title="Egresos"
-                        value={data.summary.expensesTotal}
-                        icon={TrendingDown}
-                        formula="Suma de egresos registrados del mes"
-                        description="Gasto total del mes"
-                        color="text-red-600"
-                    />
-                    <SummaryCard
-                        title="Balance (Ahorro)"
-                        value={balanceFromSnapshots}
-                        icon={Wallet}
-                        formula="Ingresos reales - Egresos"
-                        description="Resultado neto del mes"
-                        color={balanceFromSnapshots >= 0 ? "text-blue-600" : "text-red-600"}
-                    />
-                    <SummaryCard
-                        title="Descuadre"
-                        value={descuadreValue}
-                        icon={Briefcase}
-                        color={descuadreColor}
-                        formula="Ingresos reales del mes - (Ingresos proyectados mes anterior - Egresos mes anterior)"
-                        description="Positivo: ingresos no reportados. Negativo: egresos no reportados."
-                    />
-                </div>
-            </div>
-
-            <div className="rounded-xl border bg-muted/20 p-4 md:p-6">
-                <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-semibold">Patrimonio</h2>
-                </div>
-                <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-                    <SummaryCard
-                        title="Capital Total"
-                        value={data.summary.capitalTotal}
-                        icon={PiggyBank}
-                        formula="Activos (segun snapshots) - Deudas netas"
-                        description="Valor neto total"
-                    />
-                    <SummaryCard
-                        title="Patrimonio Liquido"
-                        value={data.summary.liquidTotal}
-                        icon={DollarSign}
-                        formula="Suma de saldos en cuentas liquidas"
-                        description="Dinero de facil acceso"
-                    />
-                    <SummaryCard
-                        title="Deudas restantes"
-                        value={data.summary.debtTotal}
-                        icon={CreditCard}
-                        formula="Suma de (monto - amortizacion) por deuda"
-                        description="Saldo pendiente total"
-                        color="text-orange-600"
-                    />
-                    <SummaryCard
-                        title="Delta Capital"
-                        value={data.actualIncreaseThis}
-                        icon={TrendingUp}
-                        formula="Capital total actual - Capital total anterior"
-                        description="Variacion del patrimonio"
-                        color={data.actualIncreaseThis >= 0 ? "text-green-600" : "text-red-600"}
-                    />
-                    <SummaryCard
-                        title="Capital Proyectado (Mes Siguiente)"
-                        value={projectedCapitalNext}
-                        icon={TrendingUp}
-                        formula="Capital total + Ingresos proyectados - Egresos"
-                        description="Capital estimado del proximo mes"
-                        color="text-blue-600"
-                    />
-                </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-                <Card className="relative z-20">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium">
-                            <span
-                                className="group relative mr-2 inline-flex h-4 w-4 items-center justify-center rounded-full border text-[10px] text-muted-foreground transition-colors hover:bg-muted/60"
-                            >
-                                ?
-                                <span className="pointer-events-none absolute left-0 top-6 z-50 w-56 rounded-md border bg-background px-2 py-1 text-[10px] text-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
-                                    (Delta de capital actual) - (Proyectado mes anterior)
-                                </span>
-                            </span>
-                            Diferencia vs proyeccion anterior
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <div className={`text-2xl font-bold ${deltaColor}`}>
-                            ${formatMoney(data.projectionDelta)}
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-1">
-                            Diferencia entre proyeccion previa y resultado real
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                            Proyectado mes anterior: ${formatMoney(data.prevProjectedIncrease)} | Real este mes: ${formatMoney(data.actualIncreaseThis)}
-                        </p>
-                    </CardContent>
-                </Card>
-
-                {(data.projectedNonSalary > 0) && (
-                    <Card>
-                        <CardHeader className="pb-2">
-                            <CardTitle className="text-sm font-medium">Proyeccion de Rendimientos</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-2xl font-bold text-blue-700">
-                                ${formatMoney(data.projectedNonSalary)}
-                            </div>
-                            <p className="text-xs text-muted-foreground mt-1">
-                                Rendimientos estimados del mes actual
-                            </p>
-                        </CardContent>
-                    </Card>
-                )}
-            </div>
-
-            <div className="flex justify-center">
-                <Card className="w-full max-w-6xl">
-                    <CardHeader className="flex flex-row items-center justify-between">
-                        <CardTitle>Rendimientos por Cuenta</CardTitle>
-                        <div className="flex items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={() => setExpandReturns(prev => !prev)}
-                                className="text-xs text-muted-foreground hover:text-foreground"
-                            >
-                                {expandReturns ? 'Reducir' : 'Maximizar'}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setShowReturns(prev => !prev)}
-                                className="text-xs text-muted-foreground hover:text-foreground"
-                            >
-                                {showReturns ? 'Ocultar' : 'Mostrar'}
-                            </button>
-                        </div>
-                    </CardHeader>
-                    {showReturns && (
-                        <CardContent className="pt-0">
-                            <div className={`${expandReturns ? 'max-h-none' : 'max-h-[32rem]'} overflow-auto rounded-md border`}>
-                                <Table>
-                                    <TableHeader>
-                                    <TableRow>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('accountName')}>
-                                                Cuenta{sortIndicator('accountName')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('entityName')}>
-                                                Entidad{sortIndicator('entityName')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('balance')}>
-                                                Saldo actual (COP){sortIndicator('balance')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('prevBalance')}>
-                                                Saldo mes pasado (COP){sortIndicator('prevBalance')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('balanceDiff')}>
-                                                Diferencia saldo (COP){sortIndicator('balanceDiff')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('balanceDiffPct')}>
-                                                Crecimiento real %{sortIndicator('balanceDiffPct')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('projected')}>
-                                                Proyectado (COP){sortIndicator('projected')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('real')}>
-                                                Real (COP){sortIndicator('real')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('diff')}>
-                                                Diferencia (COP){sortIndicator('diff')}
-                                            </button>
-                                        </TableHead>
-                                        <TableHead className="whitespace-normal">
-                                            <button type="button" onClick={() => toggleSort('diffPct')}>
-                                                % Dif.{sortIndicator('diffPct')}
-                                            </button>
-                                            </TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {sortedRows.length === 0 && (
-                                        <TableRow>
-                                            <TableCell colSpan={9} className="text-center text-muted-foreground">
-                                                No hay datos de snapshots para comparar.
-                                            </TableCell>
-                                        </TableRow>
-                                    )}
-                                    {sortedRows.map((row) => {
-                                        const diffValue = row.diff ?? 0;
-                                        const diffColor = diffValue >= 0 ? 'text-green-600' : 'text-red-600';
-                                        const balanceDiffValue = row.balanceDiff ?? 0;
-                                        const balanceDiffColor = balanceDiffValue >= 0 ? 'text-green-600' : 'text-red-600';
-                                        const balanceDiffPctValue = row.balanceDiffPct === null ? '-' : `${row.balanceDiffPct.toFixed(1)}%`;
-                                        const pct = row.diffPct === null ? '-' : `${row.diffPct.toFixed(1)}%`;
-                                        return (
-                                            <TableRow key={row.id}>
-                                                <TableCell>{row.accountName}</TableCell>
-                                                <TableCell>{row.entityName}</TableCell>
-                                                <TableCell>{row.balance === null ? 'Sin TRM' : `$${formatMoney(row.balance)}`}</TableCell>
-                                                <TableCell>{row.prevBalance === null ? 'Sin TRM' : `$${formatMoney(row.prevBalance)}`}</TableCell>
-                                                <TableCell className={balanceDiffColor}>
-                                                    {row.balanceDiff === null ? '-' : `$${formatMoney(row.balanceDiff)}`}
-                                                </TableCell>
-                                                <TableCell className={balanceDiffColor}>
-                                                    {row.balanceDiffPct === null ? '-' : balanceDiffPctValue}
-                                                </TableCell>
-                                                <TableCell>{row.projected === null ? 'Sin TRM' : `$${formatMoney(row.projected)}`}</TableCell>
-                                                <TableCell>{row.real === null ? 'Sin TRM' : `$${formatMoney(row.real)}`}</TableCell>
-                                                <TableCell className={diffColor}>{row.diff === null ? '-' : `$${formatMoney(row.diff)}`}</TableCell>
-                                                <TableCell className={diffColor}>{row.diff === null ? '-' : pct}</TableCell>
-                                                </TableRow>
-                                            );
-                                        })}
-                                    </TableBody>
-                                </Table>
-                            </div>
-                        </CardContent>
-                    )}
-                </Card>
-            </div>
-        </div>
-    );
+    return <div className="space-y-6">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Metric title="Patrimonio neto" value={data.netWorth} description="Activos + por cobrar − por pagar" icon={Landmark} featured /><Metric title="Variación patrimonial" value={data.variation} description="Frente al cierre anterior" icon={variationPositive ? ArrowUpRight : ArrowDownRight} tone={variationPositive ? 'positive' : 'negative'} /><Metric title="Cuentas por cobrar" value={data.receivables} description="Dinero que otras personas te deben" icon={CircleDollarSign} /><Metric title="Deuda pendiente" value={data.payables} description="Tarjetas y demás obligaciones" icon={WalletCards} tone="warning" /></div>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"><CompareMetric title="Ingresos externos" expected={data.expectedExternalIncome} actual={data.actualExternalIncome} description={`Salario ${formatCurrency(data.actualSalary)} · Otros ${formatCurrency(data.actualOtherIncome)}`} icon={CircleDollarSign} /><CompareMetric title="Rendimiento pasivo" expected={data.expectedReturn} actual={data.actualPassiveReturn} description="Total convertido a COP · sin salario ni transferencias" icon={Sparkles} /><CompareMetric title="Gastos" expected={data.expectedExpenses} actual={data.actualExpenses} description="Compras y consumos" icon={ReceiptText} negative /><CompareMetric title="Flujo de caja" expected={0} actual={data.cashFlow} description="Entradas y salidas; sin traslados" icon={WalletCards} /></div>
+        <Card><CardHeader className="border-b"><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><CardTitle>Conciliación por cuenta</CardTitle><CardDescription>El saldo cambia por flujos explicados; lo pendiente nunca se considera rendimiento.</CardDescription></div><label className="text-xs text-slate-500">Ordenar por <select value={sort} onChange={event => setSort(event.target.value as typeof sort)} className="ml-2 rounded-lg border bg-white px-2 py-1.5 text-sm"><option value="balance">Mayor saldo</option><option value="unexplained">Mayor diferencia</option><option value="name">Nombre</option></select></label></div></CardHeader><CardContent className="px-0 sm:px-6"><Table><TableHeader><TableRow><TableHead>Cuenta</TableHead><TableHead className="text-right">Inicial</TableHead><TableHead className="text-right">Ingresos externos</TableHead><TableHead className="text-right">Transferencias</TableHead><TableHead className="text-right">Esperado</TableHead><TableHead className="text-right">Real confirmado</TableHead><TableHead className="text-right">Sin explicar</TableHead><TableHead className="text-right">Final</TableHead></TableRow></TableHeader><TableBody>{rows.map(row => <TableRow key={row.account.id}><TableCell><span className="font-medium">{row.account.name}</span><span className="block text-xs text-slate-500">{row.entity}{row.fxEffect ? ` · efecto TRM ${formatCurrency(row.fxEffect)}` : ''}</span></TableCell><Money value={row.openingBalance} currency={row.account.currency} /><Money value={row.externalIncome} currency={row.account.currency} /><Money value={row.transfers} currency={row.account.currency} /><Money value={row.expected} currency={row.account.currency} /><Money value={row.passiveReturn} currency={row.account.currency} colored /><Money value={row.unexplained} currency={row.account.currency} warning /><Money value={row.snapshot.balance} currency={row.account.currency} /></TableRow>)}{rows.length === 0 && <TableRow><TableCell colSpan={8} className="h-28 text-center text-slate-500">Completa el cierre mensual para ver la conciliación.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+        <div className="rounded-xl border bg-white p-4 text-sm text-slate-700"><strong>Próximo cierre proyectado: {formatCurrency(data.projectedNext)}</strong><span className="ml-2 text-slate-500">Patrimonio + ingresos externos + rendimiento pasivo − gastos previstos. Las transferencias no cambian el resultado.</span></div>
+    </div>;
 }
 
-function SummaryCard({
-    title,
-    value,
-    icon: Icon,
-    description,
-    formula,
-    color
-}: {
-    title: string;
-    value: number;
-    icon: any;
-    description?: string;
-    formula?: string;
-    color?: string;
-}) {
-    return (
-        <Card className="relative z-20">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="flex items-center text-sm font-medium">
-                    {formula && (
-                        <span
-                            className="group relative mr-2 inline-flex h-4 w-4 items-center justify-center rounded-full border text-[10px] text-muted-foreground transition-colors hover:bg-muted/60"
-                        >
-                            ?
-                            <span className="pointer-events-none absolute left-0 top-6 z-50 w-56 rounded-md border bg-background px-2 py-1 text-[10px] text-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
-                                {formula}
-                            </span>
-                        </span>
-                    )}
-                    {title}
-                </CardTitle>
-                <Icon className={`h-4 w-4 text-muted-foreground ${color}`} />
-            </CardHeader>
-            <CardContent>
-                <div className={`text-2xl font-bold ${color}`}>
-                    ${formatMoney(value)}
-                </div>
-                {description && (
-                    <p className="text-xs text-muted-foreground mt-1">
-                        {description}
-                    </p>
-                )}
-            </CardContent>
-        </Card>
-    );
-}
+function Metric({ title, value, description, icon: Icon, tone = 'neutral', featured }: { title: string; value: number; description: string; icon: typeof Landmark; tone?: 'neutral' | 'positive' | 'negative' | 'warning'; featured?: boolean }) { const color = tone === 'positive' ? 'text-emerald-700' : tone === 'negative' ? 'text-rose-700' : tone === 'warning' ? 'text-amber-700' : 'text-slate-950'; return <Card className={featured ? 'border-slate-950 bg-slate-950 text-white' : ''}><CardHeader className="flex flex-row items-center justify-between pb-2"><CardTitle className={featured ? 'text-sm text-slate-300' : 'text-sm'}>{title}</CardTitle><Icon className="size-4" /></CardHeader><CardContent><p className={featured ? 'text-2xl font-semibold text-white' : `text-2xl font-semibold ${color}`}>{formatCurrency(value)}</p><p className={featured ? 'mt-1 text-xs text-slate-400' : 'mt-1 text-xs text-slate-500'}>{description}</p></CardContent></Card>; }
+function CompareMetric({ title, expected, actual, description, icon: Icon, negative }: { title: string; expected: number; actual: number; description: string; icon: typeof Landmark; negative?: boolean }) { return <Card><CardHeader className="flex flex-row items-center justify-between pb-2"><CardTitle className="text-sm">{title}</CardTitle><Icon className="size-4 text-slate-500" /></CardHeader><CardContent><p className={negative ? 'text-xl font-semibold text-rose-700' : 'text-xl font-semibold'}>{formatCurrency(actual)} real</p><p className="mt-1 text-xs text-slate-500">{formatCurrency(expected)} esperado · {description}</p></CardContent></Card>; }
+function Money({ value, currency, colored, warning }: { value: number; currency: Currency; colored?: boolean; warning?: boolean }) { const className = warning && Math.abs(value) >= (currency === 'COP' ? 1 : 0.01) ? 'text-right font-medium text-amber-700' : colored ? `text-right ${value >= 0 ? 'text-emerald-700' : 'text-rose-700'}` : 'text-right'; return <TableCell className={className}>{formatCurrency(value, currency)}</TableCell>; }

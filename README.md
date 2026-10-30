@@ -1,36 +1,58 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Mi economía
 
-## Getting Started
+Aplicación local para cerrar cada mes mediante saldos reales, movimientos enlazados, obligaciones y planificación. Los datos se guardan en IndexedDB dentro del navegador; únicamente la consulta de TRM se comunica con la fuente pública de la Superintendencia Financiera.
 
-First, run the development server:
+## Uso local
+
+Para usar la aplicación sin compilaciones al cambiar de sección:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run build
+npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abre [http://localhost:3000](http://localhost:3000). El periodo seleccionado se conserva al navegar entre secciones.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+`npm run dev` queda reservado para modificar el código. Usa Webpack y conserva hasta 20 rutas durante una hora; la primera visita a una ruta todavía puede compilar porque es el comportamiento normal del modo de desarrollo.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Flujo mensual
 
-## Learn More
+1. Abre **Cierre mensual** y copia las tasas y flujos recurrentes como previstos.
+2. Consulta la TRM oficial o escribe una tasa manual.
+3. Registra ingresos, gastos y transferencias indicando siempre la cuenta o tarjeta.
+4. Ingresa los saldos reales y clasifica las diferencias.
+5. Cierra el periodo para congelar snapshots y TRM. Para corregirlo después usa **Reabrir mes**.
 
-To learn more about Next.js, take a look at the following resources:
+El salario y otros ingresos externos se muestran separados del rendimiento pasivo. Las transferencias internas no se consideran ingreso, gasto ni ganancia.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Respaldo de datos
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+En **Datos y entidades → Respaldo de tus finanzas** puedes:
 
-## Deploy on Vercel
+- descargar todas las tablas en un archivo JSON;
+- validar y restaurar un respaldo sin modificarlo;
+- recuperar archivos históricos que usen la versión 1 del formato y migrarlos automáticamente a la versión 2.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+La importación valida primero la estructura completa y solo después, con confirmación explícita, reemplaza los datos locales dentro de una transacción. Las tablas históricas `incomes` y `projectedIncomes` permanecen en el formato para conservar compatibilidad aunque ya no tengan un flujo duplicado en la interfaz.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Para comprobar el respaldo más reciente de la carpeta `Save`:
+
+```bash
+npm run validate:backup
+```
+
+También puedes indicar otro archivo:
+
+```bash
+npm run validate:backup -- "ruta/al/respaldo.json"
+```
+
+## Verificación del proyecto
+
+```bash
+npm run typecheck
+npm run lint
+npm test
+npm run build
+```

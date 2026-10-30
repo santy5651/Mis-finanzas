@@ -64,10 +64,9 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                 isActive: true,
             });
             onSuccess?.();
-            alert("Cuenta guardada exitosamente!");
         } catch (error) {
             console.error(error);
-            alert("Error al guardar la cuenta");
+            form.setError('root', { message: 'No fue posible guardar la cuenta.' });
         }
     }
 
@@ -224,6 +223,7 @@ export function AccountForm({ onSuccess, defaultValues }: AccountFormProps) {
                     />
                 </div>
 
+                {form.formState.errors.root?.message && <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{form.formState.errors.root.message}</div>}
                 <Button type="submit" className="w-full">Guardar Cuenta</Button>
             </form>
         </Form>

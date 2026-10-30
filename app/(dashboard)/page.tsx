@@ -1,126 +1,117 @@
 'use client';
 
+import { useState } from 'react';
+import Link from 'next/link';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { ArrowRight, Check, CreditCard, ReceiptText, RefreshCw, Sparkles, WalletCards } from 'lucide-react';
 import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { PeriodSelector } from '@/components/dashboard/period-selector';
 import { DashboardSummary } from '@/components/dashboard/dashboard-summary';
 import { DashboardCharts } from '@/components/dashboard/dashboard-charts';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '@/lib/db/db';
+import { dateInsidePeriod } from '@/lib/finance/period';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { useEffect, useState } from 'react';
-import { formatMoney } from '@/lib/utils';
 
 export default function DashboardPage() {
     const { periodId } = useActivePeriod();
-    const [usdCopRate, setUsdCopRate] = useState<number | ''>('');
-
     const period = useLiveQuery(() => db.periods.get(periodId), [periodId]);
-
-    useEffect(() => {
-        if (period?.usdCopRate) {
-            setUsdCopRate(period.usdCopRate);
-        } else {
-            setUsdCopRate('');
-        }
-    }, [periodId, period?.usdCopRate]);
-
-    const incomes = useLiveQuery(
-        () => db.incomes.where('periodId').equals(periodId).reverse().limit(5).toArray(),
-        [periodId]
-    ) || [];
-
-    const expenses = useLiveQuery(
-        () => db.expenses.where('periodId').equals(periodId).reverse().limit(5).toArray(),
-        [periodId]
-    ) || [];
 
     return (
         <div className="space-y-8">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
                 <div>
-                    <h1 className="text-3xl font-bold">Resumen Mensual</h1>
-                    <p className="text-sm text-muted-foreground">
-                        Indicadores clave, proyecciones y actividad reciente del periodo.
-                    </p>
+                    <p className="text-sm font-medium text-emerald-700">Panorama mensual</p>
+                    <h1 className="page-title">Tu situación financiera</h1>
+                    <p className="page-description">Consulta lo que tienes, lo que debes y cómo cambió tu patrimonio durante el periodo.</p>
                 </div>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <div className="flex items-center gap-2 rounded-lg border bg-muted/20 px-3 py-2">
-                        <span className="text-xs text-muted-foreground">TRM USD/COP</span>
-                        <Input
-                            type="number"
-                            className="w-32 bg-background"
-                            value={usdCopRate}
-                            onChange={(event) => {
-                                const value = event.target.valueAsNumber;
-                                setUsdCopRate(Number.isNaN(value) ? '' : value);
-                            }}
-                        />
-                        <Button
-                            variant="outline"
-                            onClick={async () => {
-                                const [yearStr, monthStr] = periodId.split('-');
-                                const nextRate = usdCopRate === '' ? null : Number(usdCopRate);
-                                await db.periods.put({
-                                    id: periodId,
-                                    year: parseInt(yearStr),
-                                    month: parseInt(monthStr),
-                                    usdCopRate: nextRate
-                                });
-                            }}
-                        >
-                            Guardar TRM
-                        </Button>
-                    </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <TrmEditor key={`${periodId}-${period?.usdCopRate ?? 'empty'}`} periodId={periodId} initialRate={period?.usdCopRate ?? null} locked={period?.status === 'CLOSED'} />
                     <PeriodSelector />
                 </div>
             </div>
 
             <DashboardSummary />
 
-            <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-semibold">Graficos</h2>
+            <section className="space-y-4">
+                <div>
+                    <h2 className="text-lg font-semibold text-slate-950">Tendencias</h2>
+                    <p className="text-sm text-slate-500">La evolución histórica ayuda a separar un cambio puntual de una tendencia.</p>
                 </div>
                 <DashboardCharts />
-            </div>
+            </section>
 
-            <div className="grid gap-4 md:grid-cols-2">
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Ingresos Recientes</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <ul className="space-y-2">
-                            {incomes.map(inc => (
-                                <li key={inc.id} className="flex justify-between items-center border-b pb-2">
-                                    <span className="font-medium">{inc.concept}</span>
-                                    <span className="text-green-600">+${formatMoney(inc.amount, inc.currency)}</span>
-                                </li>
-                            ))}
-                            {incomes.length === 0 && <p className="text-sm text-muted-foreground">No hay registros.</p>}
-                        </ul>
-                    </CardContent>
-                </Card>
-
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Egresos Recientes</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <ul className="space-y-2">
-                            {expenses.map(exp => (
-                                <li key={exp.id} className="flex justify-between items-center border-b pb-2">
-                                    <span className="font-medium">{exp.reason}</span>
-                                    <span className="text-red-600">-${formatMoney(exp.amount, exp.currency)}</span>
-                                </li>
-                            ))}
-                            {expenses.length === 0 && <p className="text-sm text-muted-foreground">No hay registros.</p>}
-                        </ul>
-                    </CardContent>
-                </Card>
-            </div>
+            <section className="space-y-4">
+                <div>
+                    <h2 className="text-lg font-semibold text-slate-950">Actualizar este mes</h2>
+                    <p className="text-sm text-slate-500">Completa estos pasos para que el resumen sea preciso.</p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <QuickAction href={`/cierre?period=${periodId}`} title="Completar cierre" description="Saldos, conciliación y TRM en cinco pasos." icon={WalletCards} />
+                    <QuickAction href={`/movimientos?period=${periodId}`} title="Registrar movimientos" description="Ingresos, gastos y transferencias enlazados." icon={ReceiptText} />
+                    <QuickAction href={`/ingresos-proyectados?period=${periodId}`} title="Revisar planificación" description="Separa salario, gastos y rendimiento esperado." icon={Sparkles} />
+                    <QuickAction href={`/obligaciones?period=${periodId}`} title="Revisar obligaciones" description="Tarjetas, deudas y cuentas por cobrar." icon={CreditCard} />
+                </div>
+            </section>
         </div>
+    );
+}
+
+function TrmEditor({ periodId, initialRate, locked }: { periodId: string; initialRate: number | null; locked: boolean }) {
+    const [rate, setRate] = useState<number | ''>(initialRate ?? '');
+    const [saved, setSaved] = useState(false);
+    const [loading, setLoading] = useState(false);
+
+    const save = async () => {
+        const existing = await db.periods.get(periodId);
+        const [year, month] = periodId.split('-').map(Number);
+        await db.periods.put({ ...(existing ?? { id: periodId, year, month, status: 'OPEN' as const }), usdCopRate: rate === '' ? null : rate, trmDate: dateInsidePeriod(periodId), trmSource: 'MANUAL' });
+        setSaved(true);
+        window.setTimeout(() => setSaved(false), 1800);
+    };
+    const loadOfficial = async () => {
+        setLoading(true);
+        try {
+            const date = dateInsidePeriod(periodId);
+            const response = await fetch(`/api/trm?date=${date}`);
+            const data = await response.json();
+            if (!response.ok) return;
+            setRate(data.value);
+            const existing = await db.periods.get(periodId);
+            const [year, month] = periodId.split('-').map(Number);
+            await db.periods.put({ ...(existing ?? { id: periodId, year, month, status: 'OPEN' as const }), usdCopRate: data.value, trmDate: date, trmValidFrom: data.validFrom, trmValidTo: data.validTo, trmSource: 'SFC' });
+            setSaved(true);
+        } finally { setLoading(false); }
+    };
+
+    return (
+        <div className="flex items-center gap-1.5 rounded-xl border bg-white p-1 shadow-sm">
+            <label htmlFor="trm" className="pl-2 text-xs font-medium text-slate-500">TRM</label>
+            <Input
+                id="trm"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="USD/COP"
+                className="h-9 w-28 border-0 bg-slate-50 shadow-none"
+                value={rate}
+                onChange={event => setRate(Number.isNaN(event.target.valueAsNumber) ? '' : event.target.valueAsNumber)}
+                disabled={locked}
+            />
+            <Button variant="ghost" size="icon" onClick={loadOfficial} disabled={locked || loading} title="Consultar TRM oficial"><RefreshCw className={loading ? 'animate-spin' : ''} /></Button>
+            <Button variant="ghost" size="sm" onClick={save} disabled={locked} className={saved ? 'text-emerald-700' : ''}>
+                {saved ? <><Check /> Guardada</> : 'Guardar'}
+            </Button>
+        </div>
+    );
+}
+
+function QuickAction({ href, title, description, icon: Icon }: { href: string; title: string; description: string; icon: typeof WalletCards }) {
+    return (
+        <Link href={href} className="group flex items-center gap-3 rounded-xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-md">
+            <span className="rounded-xl bg-slate-100 p-2.5 text-slate-700 transition-colors group-hover:bg-emerald-100 group-hover:text-emerald-700"><Icon className="size-5" /></span>
+            <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-slate-900">{title}</span><span className="block text-xs leading-relaxed text-slate-500">{description}</span></span>
+            <ArrowRight className="size-4 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-emerald-600" />
+        </Link>
     );
 }
