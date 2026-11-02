@@ -23,6 +23,8 @@ export interface NetWorthResult {
     estimatedAccounts: Account[];
     /** Names of USD accounts or obligations left out because the period has no TRM. */
     missingRate: string[];
+    /** Every account counted or attempted: native balance, COP value (null without TRM), and whether it was estimated. */
+    accountValues: Array<{ account: Account; native: number; cop: number | null; estimated: boolean }>;
 }
 
 const sum = (rows: Array<{ amount: number }>) => rows.reduce((total, row) => total + row.amount, 0);
@@ -48,6 +50,7 @@ export function obligationBalance(
 export function computeNetWorth(input: NetWorthInput): NetWorthResult {
     const estimatedAccounts: Account[] = [];
     const missingRate: string[] = [];
+    const accountValues: NetWorthResult['accountValues'] = [];
     let assets = 0;
 
     for (const account of input.accounts) {
@@ -62,6 +65,7 @@ export function computeNetWorth(input: NetWorthInput): NetWorthResult {
             estimatedAccounts.push(account);
         }
         const value = convertToCopOrNull(balance, account.currency, input.period, snapshot);
+        accountValues.push({ account, native: balance, cop: value, estimated: !snapshot });
         if (value === null) missingRate.push(account.name);
         else assets += value;
     }
@@ -78,5 +82,5 @@ export function computeNetWorth(input: NetWorthInput): NetWorthResult {
         else payables += value;
     }
 
-    return { assets, receivables, payables, netWorth: assets + receivables - payables, estimatedAccounts, missingRate };
+    return { assets, receivables, payables, netWorth: assets + receivables - payables, estimatedAccounts, missingRate, accountValues };
 }

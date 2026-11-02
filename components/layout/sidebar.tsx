@@ -11,6 +11,7 @@ import {
     ClipboardCheck,
     CreditCard,
     Database,
+    FileText,
     Menu,
     PiggyBank,
     Sparkles,
@@ -39,6 +40,7 @@ const navGroups = [
         label: 'Organización',
         items: [
             { href: '/cuentas', label: 'Cuentas', description: 'Bancos e inversiones', icon: Building2 },
+            { href: '/renta', label: 'Renta', description: 'Datos para la declaración', icon: FileText },
             { href: '/config', label: 'Datos y entidades', description: 'Respaldo y configuración', icon: Database },
         ],
     },
