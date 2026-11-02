@@ -1,7 +1,7 @@
 'use client';
 
 import { useLiveQuery } from 'dexie-react-hooks';
-import { format, parse } from 'date-fns';
+import { format, parse, subMonths } from 'date-fns';
 import { es } from 'date-fns/locale';
 import {
     Area,
@@ -15,15 +15,10 @@ import {
     YAxis,
 } from 'recharts';
 import { db } from '@/lib/db/db';
-import type { Currency, Period } from '@/lib/types';
+import { convertToCop } from '@/lib/finance/currency';
+import { computeNetWorth } from '@/lib/finance/networth';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatCurrency } from '@/lib/utils';
-
-function convert(amount: number, currency: Currency, period?: Period, capturedRate?: number): number | null {
-    if (currency === 'COP') return amount;
-    const rate = capturedRate ?? period?.usdCopRate;
-    return rate ? amount * rate : null;
-}
 
 function shortMoney(value: number): string {
     const absolute = Math.abs(value);
@@ -35,16 +30,18 @@ function shortMoney(value: number): string {
 
 export function DashboardCharts() {
     const chartData = useLiveQuery(async () => {
-        const [periods, accounts, snapshots, obligations, obligationSnapshots, expenses] = await Promise.all([
+        const [periods, accounts, snapshots, obligations, obligationSnapshots, expenses, entries, obligationEntries] = await Promise.all([
             db.periods.toArray(),
             db.accounts.toArray(),
             db.accountSnapshots.toArray(),
             db.obligations.toArray(),
             db.obligationSnapshots.toArray(),
             db.expenses.toArray(),
+            db.accountEntries.toArray(),
+            db.obligationEntries.toArray(),
         ]);
         const periodMap = new Map(periods.map(period => [period.id, period]));
-        const accountMap = new Map(accounts.map(account => [account.id, account]));
+        const inPeriod = <T extends { periodId: string }>(rows: T[], periodId: string) => rows.filter(row => row.periodId === periodId);
         const periodIds = new Set([
             ...snapshots.map(snapshot => snapshot.periodId),
             ...expenses.map(expense => expense.periodId),
@@ -56,29 +53,25 @@ export function DashboardCharts() {
             .slice(-12)
             .map(periodId => {
                 const parsedDate = parse(periodId, 'yyyy-MM', new Date());
+                const previousPeriodId = format(subMonths(parsedDate, 1), 'yyyy-MM');
                 const period = periodMap.get(periodId);
-                const assets = snapshots
-                    .filter(snapshot => snapshot.periodId === periodId)
-                    .reduce((total, snapshot) => {
-                        const account = accountMap.get(snapshot.accountId);
-                        if (!account) return total;
-                        return total + (convert(snapshot.balance, account.currency, period, snapshot.usdCopRate) ?? 0);
-                    }, 0);
-                const obligationTotals = obligationSnapshots
-                    .filter(item => item.periodId === periodId)
-                    .reduce((total, snapshot) => {
-                        const obligation = obligations.find(item => item.id === snapshot.obligationId);
-                        if (!obligation) return total;
-                        const value = convert(snapshot.balance, obligation.currency, period, snapshot.usdCopRate) ?? 0;
-                        return total + (obligation.direction === 'RECEIVABLE' ? value : -value);
-                    }, 0);
-                const expense = expenses
-                    .filter(item => item.periodId === periodId)
-                    .reduce((total, item) => total + (convert(item.amount, item.currency, period) ?? 0), 0);
+                const { netWorth } = computeNetWorth({
+                    period,
+                    accounts,
+                    snapshots: inPeriod(snapshots, periodId),
+                    previousSnapshots: inPeriod(snapshots, previousPeriodId),
+                    entries: inPeriod(entries, periodId),
+                    obligations,
+                    obligationSnapshots: inPeriod(obligationSnapshots, periodId),
+                    previousObligationSnapshots: inPeriod(obligationSnapshots, previousPeriodId),
+                    obligationEntries: inPeriod(obligationEntries, periodId),
+                });
+                const expense = inPeriod(expenses, periodId)
+                    .reduce((total, item) => total + convertToCop(item.amount, item.currency, period), 0);
                 return {
                     periodId,
                     label: format(parsedDate, 'MMM yy', { locale: es }),
-                    patrimonio: assets + obligationTotals,
+                    patrimonio: netWorth,
                     gastos: expense,
                 };
             });

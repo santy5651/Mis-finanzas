@@ -9,6 +9,7 @@ import { db } from '@/lib/db/db';
 import type { AccountSnapshot, ObligationSnapshot, Period, PlannedCashFlow } from '@/lib/types';
 import { calculateAccountReconciliation, calculateObligationReconciliation, expectedPassiveReturn } from '@/lib/finance/reconciliation';
 import { saveFinancialEvent } from '@/lib/finance/ledger';
+import { copyRecurringPlan } from '@/lib/finance/recurring';
 import { dateInsidePeriod, parseAmountInput } from '@/lib/finance/period';
 import { isSignificant } from '@/lib/finance/currency';
 import { ReconciliationAssistant, type ReconciliationRow } from '@/components/close/reconciliation-assistant';
@@ -114,24 +115,12 @@ export default function MonthlyClosePage() {
     const prepareMonth = async () => {
         if (locked) return;
         setMessage(null);
-        const [previousPlans, previousFlows, previousExpenses] = await Promise.all([
-            db.accountPlans.where('periodId').equals(previousPeriodId).toArray(),
-            db.plannedCashFlows.where('periodId').equals(previousPeriodId).toArray(),
-            db.expenses.where('periodId').equals(previousPeriodId).filter(item => Boolean(item.isRecurring)).toArray(),
-        ]);
-        const currentPlans = await db.accountPlans.where('periodId').equals(periodId).toArray();
-        const currentFlows = await db.plannedCashFlows.where('periodId').equals(periodId).toArray();
-        const now = new Date().toISOString();
-        const plansToAdd = previousPlans.filter(previous => !currentPlans.some(current => current.accountId === previous.accountId)).map(previous => ({ ...previous, id: uuidv4(), periodId, createdAt: now, updatedAt: now }));
-        const recurring = previousFlows.filter(item => item.isRecurring);
-        const legacyRecurring: PlannedCashFlow[] = previousExpenses.map(expense => ({ id: uuidv4(), periodId, accountId: expense.paymentAccountId || '', type: 'EXPENSE', concept: expense.reason, amount: expense.amount, currency: expense.currency, isRecurring: true, sourcePlanId: expense.id, createdAt: now, updatedAt: now }));
-        const flowCandidates = [...recurring.map(item => ({ ...item, id: uuidv4(), periodId, sourcePlanId: item.id, createdAt: now, updatedAt: now })), ...legacyRecurring.filter(item => item.accountId)];
-        const flowsToAdd = flowCandidates.filter(candidate => !currentFlows.some(current => current.type === candidate.type && current.accountId === candidate.accountId && current.concept.toLocaleLowerCase() === candidate.concept.toLocaleLowerCase()));
-        await db.transaction('rw', db.accountPlans, db.plannedCashFlows, async () => {
-            if (plansToAdd.length) await db.accountPlans.bulkAdd(plansToAdd);
-            if (flowsToAdd.length) await db.plannedCashFlows.bulkAdd(flowsToAdd);
-        });
-        setMessage({ tone: 'success', text: `Mes preparado: ${plansToAdd.length} tasa(s) y ${flowsToAdd.length} flujo(s) recurrente(s) copiados. Los elementos siguen previstos, no realizados.` });
+        try {
+            const copied = await copyRecurringPlan(periodId, previousPeriodId);
+            setMessage({ tone: 'success', text: `Mes preparado: ${copied.plans} tasa(s) y ${copied.flows} flujo(s) recurrente(s) copiados. Los elementos siguen previstos, no realizados.` });
+        } catch (error) {
+            setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'No fue posible preparar el mes.' });
+        }
     };
 
     const fetchTrm = async () => {

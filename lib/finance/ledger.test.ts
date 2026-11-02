@@ -184,3 +184,23 @@ describe('pairEventsAsTransfer', () => {
         expect((await db.accountEntries.where('eventId').equals(id).first())?.amount).toBe(36.38);
     });
 });
+
+describe('copyRecurringPlan', () => {
+    it('copies rates, recurring flows and recurring expenses once, and never into a closed period', async () => {
+        const { copyRecurringPlan } = await import('./recurring');
+        await db.accountPlans.add({ id: 'p9', periodId: '2026-09', accountId: 'cop', concept: 'Intereses', type: 'FIXED_EA', rateEA: 0.1, createdAt: now, updatedAt: now });
+        await db.plannedCashFlows.bulkAdd([
+            { id: 'f9', periodId: '2026-09', accountId: 'cop', type: 'SALARY', concept: 'Salario', amount: 5_000_000, currency: 'COP', isRecurring: true, createdAt: now, updatedAt: now },
+            { id: 'once', periodId: '2026-09', accountId: 'cop', type: 'OTHER_INCOME', concept: 'Bono', amount: 1, currency: 'COP', isRecurring: false, createdAt: now, updatedAt: now },
+        ]);
+        await db.expenses.add(expense({ id: 'netflix', periodId: '2026-09', date: '2026-09-05', reason: 'Netflix', amount: 40_000, isRecurring: true, paymentAccountId: 'cop' }));
+
+        expect(await copyRecurringPlan('2026-10', '2026-09')).toEqual({ plans: 1, flows: 2 });
+        expect(await copyRecurringPlan('2026-10', '2026-09')).toEqual({ plans: 0, flows: 0 });
+        const concepts = (await db.plannedCashFlows.where('periodId').equals('2026-10').toArray()).map(flow => flow.concept).sort();
+        expect(concepts).toEqual(['Netflix', 'Salario']);
+
+        await closePeriod('2026-11');
+        await expect(copyRecurringPlan('2026-11', '2026-10')).rejects.toBeInstanceOf(LedgerError);
+    });
+});

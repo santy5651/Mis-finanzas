@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { format } from 'date-fns';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '@/lib/db/db';
 import { createBackup, getBackupRecordCount, parseBackup, restoreBackup, type BackupPayload } from '@/lib/db/backup';
@@ -57,7 +58,7 @@ export default function ConfigPage() {
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
             anchor.href = url;
-            anchor.download = `finanzas-export-${new Date().toISOString().slice(0, 10)}.json`;
+            anchor.download = `finanzas-export-${format(new Date(), 'yyyy-MM-dd')}.json`;
             anchor.click();
             URL.revokeObjectURL(url);
             setMessage({ tone: 'success', text: `Respaldo creado: ${getBackupRecordCount(payload)} registros incluidos.` });

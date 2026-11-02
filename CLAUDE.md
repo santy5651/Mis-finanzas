@@ -43,11 +43,14 @@ Full verification before finishing a change: `typecheck`, `lint`, `test`, `build
 ### Monthly close (`app/(dashboard)/cierre/page.tsx`, `lib/finance/reconciliation.ts`)
 - `AccountSnapshot.balance` is the real end-of-month balance. Reconciliation compares the change from the previous period's snapshot with the sum of that period's entries, split by event type. The remainder is `unexplained`.
 - Closing sets `Period.status = 'CLOSED'`, which freezes the snapshots and TRM. Forms and pages check `period.status === 'CLOSED'` and become read-only (`locked`) until the user chooses "Reabrir mes".
-- Currency: `COP` or `USD`. `lib/finance/currency.ts` resolves the rate: a closed period uses the snapshot's frozen `usdCopRate`, and an open period uses the period's current rate. `calculateFxEffect` separates FX gains from real returns.
+- Currency: `COP` or `USD`. `lib/finance/currency.ts` is the only conversion code. It resolves the rate: a closed period uses the snapshot's frozen `usdCopRate`, and an open period uses the period's current rate. Use `convertToCopOrNull` where a missing TRM must be surfaced; `convertToCop` treats a missing rate as 0. `calculateFxEffect` separates FX gains from real returns.
+- Net worth (dashboard and charts) comes from `computeNetWorth` in `lib/finance/networth.ts`. An active account without a snapshot is estimated as the previous balance plus the month's entries. USD items without a rate are listed in `missingRate`, and the dashboard shows both cases as notices.
+- Recurring rates and flows are copied only on explicit request through `copyRecurringPlan` in `lib/finance/recurring.ts` ("Preparar" in the close, "Copiar recurrentes" in Planificación). Never copy automatically on page load, because that resurrects flows the user deleted.
 - `lib/finance/planning.ts` copies recurring planned flows into the next period.
 
 ### Backup (`lib/db/backup.ts`, `scripts/validate-backup.mjs`)
 - JSON export of every table (`BACKUP_VERSION = 2`, `BACKUP_TABLE_NAMES`). `parseBackup` validates the whole structure first. `migrateLegacyBackup` converts v1 files the same way the Dexie v12 upgrade does. `restoreBackup` clears and bulk-adds all tables in one transaction.
+- `lib/db/backup-integrity.ts` checks references between tables: broken links are errors that block the import, while loose ends are only warnings. It has no runtime imports, so `scripts/validate-backup.mjs` can import the `.ts` file directly under Node's type stripping.
 - When you add a table, update the Dexie schema, `BackupTables` / `BACKUP_TABLE_NAMES`, `createBackup`, `restoreBackup`, the validator script and the tests together.
 - `Save/` holds real user backups (personal financial data). Use them only for validation; don't modify or commit them.
 

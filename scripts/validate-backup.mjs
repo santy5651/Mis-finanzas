@@ -1,6 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { checkBackupIntegrity } from '../lib/db/backup-integrity.ts';
 
 const requiredTables = [
     'periods',
@@ -53,6 +54,15 @@ for (const tableName of [...requiredTables, ...optionalTables]) {
 if (payload.tables.accounts.some(account => !Array.isArray(account.categories) && typeof account.category !== 'string')) {
     throw new Error('Hay cuentas sin categorías compatibles.');
 }
+
+if (typeof payload.version === 'number' && payload.version > 2) {
+    throw new Error(`Versión de formato desconocida: ${payload.version}.`);
+}
+
+const tables = Object.fromEntries([...requiredTables, ...optionalTables].map(name => [name, payload.tables[name] ?? []]));
+const { errors, warnings } = checkBackupIntegrity(tables);
+warnings.forEach(warning => console.warn(`Aviso: ${warning}`));
+if (errors.length) throw new Error(`Referencias rotas:\n- ${errors.join('\n- ')}`);
 
 const counts = Object.fromEntries(
     [...requiredTables, ...optionalTables].map(tableName => [tableName, (payload.tables[tableName] ?? []).length]),

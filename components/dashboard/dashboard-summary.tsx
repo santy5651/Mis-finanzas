@@ -3,11 +3,12 @@
 import { useMemo, useState } from 'react';
 import { format, parse, subMonths } from 'date-fns';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { ArrowDownRight, ArrowUpRight, CircleDollarSign, Landmark, ReceiptText, Sparkles, WalletCards } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, CircleAlert, CircleDollarSign, Landmark, ReceiptText, Sparkles, WalletCards } from 'lucide-react';
 import { db } from '@/lib/db/db';
 import type { Currency } from '@/lib/types';
 import { calculateAccountReconciliation, calculateFxEffect, expectedPassiveReturn } from '@/lib/finance/reconciliation';
-import { convertToCop, resolveUsdCopRate } from '@/lib/finance/currency';
+import { convertToCop, convertToCopOrNull, resolveUsdCopRate } from '@/lib/finance/currency';
+import { computeNetWorth } from '@/lib/finance/networth';
 import { RETURN_KIND_LABELS, summarizeReturns, type ReturnsSummary } from '@/lib/finance/returns';
 import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -17,6 +18,7 @@ import { formatCurrency } from '@/lib/utils';
 export function DashboardSummary() {
     const { periodId } = useActivePeriod();
     const previousPeriodId = useMemo(() => format(subMonths(parse(periodId, 'yyyy-MM', new Date()), 1), 'yyyy-MM'), [periodId]);
+    const twoBackPeriodId = useMemo(() => format(subMonths(parse(periodId, 'yyyy-MM', new Date()), 2), 'yyyy-MM'), [periodId]);
     const data = useLiveQuery(async () => {
         const [accounts, entities, snapshots, previousSnapshots, entries, events, plans, plannedFlows, expenses, period, previousPeriod, obligations, obligationSnapshots, previousObligationSnapshots, obligationEntries] = await Promise.all([
             db.accounts.toArray(), db.entities.toArray(),
@@ -25,6 +27,10 @@ export function DashboardSummary() {
             db.accountPlans.where('periodId').equals(periodId).toArray(), db.plannedCashFlows.where('periodId').equals(periodId).toArray(),
             db.expenses.where('periodId').equals(periodId).toArray(), db.periods.get(periodId), db.periods.get(previousPeriodId),
             db.obligations.toArray(), db.obligationSnapshots.where('periodId').equals(periodId).toArray(), db.obligationSnapshots.where('periodId').equals(previousPeriodId).toArray(), db.obligationEntries.where('periodId').equals(periodId).toArray(),
+        ]);
+        const [twoBackSnapshots, previousEntries, twoBackObligationSnapshots, previousObligationEntries] = await Promise.all([
+            db.accountSnapshots.where('periodId').equals(twoBackPeriodId).toArray(), db.accountEntries.where('periodId').equals(previousPeriodId).toArray(),
+            db.obligationSnapshots.where('periodId').equals(twoBackPeriodId).toArray(), db.obligationEntries.where('periodId').equals(previousPeriodId).toArray(),
         ]);
         const accountMap = new Map(accounts.map(item => [item.id, item]));
         const entityMap = new Map(entities.map(item => [item.id, item.name]));
@@ -40,18 +46,11 @@ export function DashboardSummary() {
                 : snapshot;
             return [{ account, entity: entityMap.get(account.entityId) ?? 'Sin entidad', snapshot, previous, expected: expectedPassiveReturn(previous?.balance ?? snapshot.balance, plan), fxEffect: account.currency === 'USD' ? calculateFxEffect(previous, valuationSnapshot) : 0, ...calculation }];
         });
-        const assets = rows.reduce((sum, row) => sum + convertToCop(row.snapshot.balance, row.account.currency, period, row.snapshot), 0);
-        const previousAssets = previousSnapshots.reduce((sum, snapshot) => { const account = accountMap.get(snapshot.accountId); return account ? sum + convertToCop(snapshot.balance, account.currency, previousPeriod, snapshot) : sum; }, 0);
-        const obligationBalance = (id: string) => {
-            const current = obligationSnapshots.find(item => item.obligationId === id);
-            if (current) return current.balance;
-            const previous = previousObligationSnapshots.find(item => item.obligationId === id)?.balance ?? 0;
-            return Math.max(0, previous + obligationEntries.filter(item => item.obligationId === id).reduce((sum, item) => sum + item.amount, 0));
-        };
-        const payables = obligations.filter(item => item.direction === 'PAYABLE').reduce((sum, item) => sum + convertToCop(obligationBalance(item.id), item.currency, period), 0);
-        const receivables = obligations.filter(item => item.direction === 'RECEIVABLE').reduce((sum, item) => sum + convertToCop(obligationBalance(item.id), item.currency, period), 0);
-        const previousPayables = obligations.filter(item => item.direction === 'PAYABLE').reduce((sum, item) => sum + convertToCop(previousObligationSnapshots.find(snapshot => snapshot.obligationId === item.id)?.balance ?? 0, item.currency, previousPeriod), 0);
-        const previousReceivables = obligations.filter(item => item.direction === 'RECEIVABLE').reduce((sum, item) => sum + convertToCop(previousObligationSnapshots.find(snapshot => snapshot.obligationId === item.id)?.balance ?? 0, item.currency, previousPeriod), 0);
+        const current = computeNetWorth({ period, accounts, snapshots, previousSnapshots, entries, obligations, obligationSnapshots, previousObligationSnapshots, obligationEntries });
+        const previous = computeNetWorth({ period: previousPeriod, accounts, snapshots: previousSnapshots, previousSnapshots: twoBackSnapshots, entries: previousEntries, obligations, obligationSnapshots: previousObligationSnapshots, previousObligationSnapshots: twoBackObligationSnapshots, obligationEntries: previousObligationEntries });
+        const { assets, payables, receivables } = current;
+        const usdEntriesWithoutRate = entries.filter(entry => entry.currency === 'USD' && convertToCopOrNull(entry.amount, 'USD', period, snapshots.find(item => item.accountId === entry.accountId)) === null).length;
+        const missingRate = [...new Set(current.missingRate)];
         const convertEntry = (entry: typeof entries[number]) => convertToCop(entry.amount, entry.currency, period, snapshots.find(item => item.accountId === entry.accountId));
         const incomeEntries = entries.filter(entry => eventMap.get(entry.eventId)?.type === 'INCOME');
         const isSalaryEvent = (eventId: string) => {
@@ -79,22 +78,33 @@ export function DashboardSummary() {
         const expectedReturn = rows.reduce((sum, row) => sum + convertToCop(row.expected, row.account.currency, period, row.snapshot), 0);
         const expectedInterest = rows.filter(row => row.account.returnBehavior !== 'MARKET_VALUE').reduce((sum, row) => sum + convertToCop(row.expected, row.account.currency, period, row.snapshot), 0);
         const fxEffect = rows.reduce((sum, row) => sum + row.fxEffect, 0);
-        const netWorth = assets + receivables - payables;
-        const previousNetWorth = previousAssets + previousReceivables - previousPayables;
-        return { rows, netWorth, variation: netWorth - previousNetWorth, assets, payables, receivables, actualExternalIncome, actualSalary, actualOtherIncome, expectedExternalIncome, returns, expectedReturn, expectedInterest, actualExpenses, expectedExpenses, cashFlow, fxEffect, projectedNext: netWorth + expectedExternalIncome + expectedReturn - expectedExpenses };
-    }, [periodId, previousPeriodId]);
+        const netWorth = current.netWorth;
+        const hasPrevious = previousSnapshots.length > 0 || previousObligationSnapshots.length > 0;
+        return { rows, netWorth, variation: hasPrevious ? netWorth - previous.netWorth : 0, estimatedAccounts: current.estimatedAccounts, previousEstimated: previous.estimatedAccounts, missingRate, usdEntriesWithoutRate, previousMissingRate: previous.missingRate, assets, payables, receivables, actualExternalIncome, actualSalary, actualOtherIncome, expectedExternalIncome, returns, expectedReturn, expectedInterest, actualExpenses, expectedExpenses, cashFlow, fxEffect, projectedNext: netWorth + expectedExternalIncome + expectedReturn - expectedExpenses };
+    }, [periodId, previousPeriodId, twoBackPeriodId]);
     const [sort, setSort] = useState<'balance' | 'unexplained' | 'name'>('balance');
     if (!data) return <div className="h-48 animate-pulse rounded-xl bg-slate-100" />;
     const rows = [...data.rows].sort((a, b) => sort === 'name' ? a.account.name.localeCompare(b.account.name, 'es') : sort === 'unexplained' ? Math.abs(b.unexplained) - Math.abs(a.unexplained) : b.snapshot.balance - a.snapshot.balance);
     const variationPositive = data.variation >= 0;
 
     return <div className="space-y-6">
+        <DataQualityNotices periodId={periodId} previousPeriodId={previousPeriodId} missingRate={data.missingRate} usdEntriesWithoutRate={data.usdEntriesWithoutRate} previousMissingRate={data.previousMissingRate} estimated={data.estimatedAccounts.map(item => item.name)} previousEstimated={data.previousEstimated.map(item => item.name)} />
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Metric title="Patrimonio neto" value={data.netWorth} description="Activos + por cobrar − por pagar" icon={Landmark} featured /><Metric title="Variación patrimonial" value={data.variation} description="Frente al cierre anterior" icon={variationPositive ? ArrowUpRight : ArrowDownRight} tone={variationPositive ? 'positive' : 'negative'} /><Metric title="Cuentas por cobrar" value={data.receivables} description="Dinero que otras personas te deben" icon={CircleDollarSign} /><Metric title="Deuda pendiente" value={data.payables} description="Tarjetas y demás obligaciones" icon={WalletCards} tone="warning" /></div>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"><CompareMetric title="Ingresos externos" expected={data.expectedExternalIncome} actual={data.actualExternalIncome} description={`Salario ${formatCurrency(data.actualSalary)} · Otros ${formatCurrency(data.actualOtherIncome)}`} icon={CircleDollarSign} /><CompareMetric title="Rendimiento cobrado" expected={data.expectedInterest} actual={data.returns.collected} description={`Intereses y dividendos · ${formatCurrency(data.returns.availableForSpending)} disponibles para gastos`} icon={Sparkles} /><CompareMetric title="Gastos" expected={data.expectedExpenses} actual={data.actualExpenses} description="Compras y consumos" icon={ReceiptText} negative /><CompareMetric title="Flujo de caja" expected={0} actual={data.cashFlow} description="Entradas y salidas; sin traslados" icon={WalletCards} /></div>
         <ReturnsBreakdown returns={data.returns} fxEffect={data.fxEffect} expectedReturn={data.expectedReturn} />
         <Card><CardHeader className="border-b"><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><CardTitle>Conciliación por cuenta</CardTitle><CardDescription>El saldo cambia por flujos explicados; lo pendiente nunca se considera rendimiento.</CardDescription></div><label className="text-xs text-slate-500">Ordenar por <select value={sort} onChange={event => setSort(event.target.value as typeof sort)} className="ml-2 rounded-lg border bg-white px-2 py-1.5 text-sm"><option value="balance">Mayor saldo</option><option value="unexplained">Mayor diferencia</option><option value="name">Nombre</option></select></label></div></CardHeader><CardContent className="px-0 sm:px-6"><Table><TableHeader><TableRow><TableHead>Cuenta</TableHead><TableHead className="text-right">Inicial</TableHead><TableHead className="text-right">Ingresos externos</TableHead><TableHead className="text-right">Transferencias</TableHead><TableHead className="text-right" title="Gastos, pagos, cobros y ajustes registrados en la cuenta">Gastos y ajustes</TableHead><TableHead className="text-right">Esperado</TableHead><TableHead className="text-right">Real confirmado</TableHead><TableHead className="text-right">Sin explicar</TableHead><TableHead className="text-right">Final</TableHead></TableRow></TableHeader><TableBody>{rows.map(row => <TableRow key={row.account.id}><TableCell><span className="font-medium">{row.account.name}</span><span className="block text-xs text-slate-500">{row.entity}{row.fxEffect ? ` · efecto TRM ${formatCurrency(row.fxEffect)}` : ''}</span></TableCell><Money value={row.openingBalance} currency={row.account.currency} /><Money value={row.externalIncome} currency={row.account.currency} /><Money value={row.transfers} currency={row.account.currency} /><Money value={row.expenses + row.adjustments} currency={row.account.currency} /><Money value={row.expected} currency={row.account.currency} /><Money value={row.passiveReturn} currency={row.account.currency} colored /><Money value={row.unexplained} currency={row.account.currency} warning /><Money value={row.snapshot.balance} currency={row.account.currency} /></TableRow>)}{rows.length === 0 && <TableRow><TableCell colSpan={9} className="h-28 text-center text-slate-500">Completa el cierre mensual para ver la conciliación.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
         <div className="rounded-xl border bg-white p-4 text-sm text-slate-700"><strong>Próximo cierre proyectado: {formatCurrency(data.projectedNext)}</strong><span className="ml-2 text-slate-500">Patrimonio + ingresos externos + rendimiento pasivo − gastos previstos. Las transferencias no cambian el resultado.</span></div>
     </div>;
+}
+
+function DataQualityNotices({ periodId, previousPeriodId, missingRate, usdEntriesWithoutRate, previousMissingRate, estimated, previousEstimated }: { periodId: string; previousPeriodId: string; missingRate: string[]; usdEntriesWithoutRate: number; previousMissingRate: string[]; estimated: string[]; previousEstimated: string[] }) {
+    const notices: string[] = [];
+    if (missingRate.length || usdEntriesWithoutRate) notices.push(`Falta la TRM de ${periodId}: ${missingRate.length ? `${missingRate.join(', ')} no se suma${missingRate.length > 1 ? 'n' : ''} al patrimonio (por eso la variación aparece más baja)` : 'algunos movimientos en USD no se suman'}. Ingrésala en la parte superior o en el paso 1 del cierre.`);
+    if (previousMissingRate.length) notices.push(`El mes anterior (${previousPeriodId}) no tiene TRM; la variación excluye ${previousMissingRate.join(', ')}.`);
+    if (estimated.length) notices.push(`Sin saldo real de ${periodId} en ${estimated.join(', ')}: se usa el saldo anterior más los movimientos registrados.`);
+    if (previousEstimated.length) notices.push(`En ${previousPeriodId} faltó el saldo de ${previousEstimated.join(', ')}; el punto de partida de la variación es estimado.`);
+    if (!notices.length) return null;
+    return <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{notices.map(text => <p key={text} className="flex gap-2"><CircleAlert className="mt-0.5 size-4 shrink-0" />{text}</p>)}</div>;
 }
 
 type ReturnStatus = 'confirmed' | 'unrealized' | 'restricted' | 'estimate' | 'presentation';

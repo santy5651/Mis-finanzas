@@ -9,7 +9,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "validate:backup": "node scripts/validate-backup.mjs"
+    "validate:backup": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/validate-backup.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

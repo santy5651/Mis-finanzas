@@ -9,15 +9,26 @@ export function resolveUsdCopRate(period?: Period, snapshot?: Pick<AccountSnapsh
     return period?.usdCopRate ?? snapshot?.usdCopRate ?? null;
 }
 
+/** COP value, or null when a USD amount has no rate: callers must not read that as zero. */
+export function convertToCopOrNull(
+    amount: number,
+    currency: Currency,
+    period?: Period,
+    snapshot?: Pick<AccountSnapshot, 'usdCopRate'>,
+): number | null {
+    if (currency === 'COP') return amount;
+    const rate = resolveUsdCopRate(period, snapshot);
+    return rate ? amount * rate : null;
+}
+
+/** Same as convertToCopOrNull but counts a missing rate as 0; pair it with a visible warning. */
 export function convertToCop(
     amount: number,
     currency: Currency,
     period?: Period,
     snapshot?: Pick<AccountSnapshot, 'usdCopRate'>,
 ): number {
-    if (currency === 'COP') return amount;
-    const rate = resolveUsdCopRate(period, snapshot);
-    return rate ? amount * rate : 0;
+    return convertToCopOrNull(amount, currency, period, snapshot) ?? 0;
 }
 
 /** Smallest difference worth explaining: one peso, or one cent of a dollar. */

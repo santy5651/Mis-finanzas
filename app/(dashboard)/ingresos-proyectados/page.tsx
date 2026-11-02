@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { format, parse, subMonths } from 'date-fns';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { v4 as uuidv4 } from 'uuid';
@@ -9,7 +9,7 @@ import { db } from '@/lib/db/db';
 import type { AccountPlan, Currency, PlannedCashFlowType } from '@/lib/types';
 import { expectedPassiveReturn } from '@/lib/finance/reconciliation';
 import { convertToCop } from '@/lib/finance/currency';
-import { buildRecurringFlowCopies } from '@/lib/finance/planning';
+import { copyRecurringPlan } from '@/lib/finance/recurring';
 import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { PeriodSelector } from '@/components/dashboard/period-selector';
 import { Button } from '@/components/ui/button';
@@ -38,28 +38,6 @@ export default function PlanningPage() {
     const [message, setMessage] = useState<string | null>(null);
     const locked = period?.status === 'CLOSED';
 
-    useEffect(() => {
-        if (period === undefined || locked) return;
-        let cancelled = false;
-        const carryRecurringFlows = async () => {
-            let copied = 0;
-            await db.transaction('rw', db.plannedCashFlows, async () => {
-                const [previousFlows, currentFlows] = await Promise.all([
-                    db.plannedCashFlows.where('periodId').equals(previousPeriodId).toArray(),
-                    db.plannedCashFlows.where('periodId').equals(periodId).toArray(),
-                ]);
-                const rows = buildRecurringFlowCopies(previousFlows, currentFlows, periodId, new Date().toISOString(), uuidv4);
-                if (rows.length) await db.plannedCashFlows.bulkAdd(rows);
-                copied = rows.length;
-            });
-            if (!cancelled && copied > 0) setMessage(`Se trasladaron automáticamente ${copied} ingreso(s) o gasto(s) recurrente(s) desde ${previousPeriodId}.`);
-        };
-        carryRecurringFlows().catch(error => {
-            console.error('No fue posible trasladar la planificación recurrente.', error);
-            if (!cancelled) setMessage('No fue posible trasladar automáticamente la planificación recurrente. Puedes usar “Copiar recurrentes”.');
-        });
-        return () => { cancelled = true; };
-    }, [locked, period, periodId, previousPeriodId]);
     const balanceFor = (accountId: string) => snapshots.find(item => item.accountId === accountId)?.balance ?? previousSnapshots.find(item => item.accountId === accountId)?.balance ?? 0;
     const expectedReturn = plans.reduce((sum, plan) => {
         const account = accounts.find(item => item.id === plan.accountId);
@@ -76,29 +54,19 @@ export default function PlanningPage() {
     };
     const copyPrevious = async () => {
         if (locked) return;
-        const now = new Date().toISOString();
-        let copiedPlans = 0;
-        let copiedFlows = 0;
-        await db.transaction('rw', db.accountPlans, db.plannedCashFlows, async () => {
-            const [previousPlans, previousFlows, currentPlans, currentFlows] = await Promise.all([
-                db.accountPlans.where('periodId').equals(previousPeriodId).toArray(),
-                db.plannedCashFlows.where('periodId').equals(previousPeriodId).toArray(),
-                db.accountPlans.where('periodId').equals(periodId).toArray(),
-                db.plannedCashFlows.where('periodId').equals(periodId).toArray(),
-            ]);
-            const planRows = previousPlans.filter(previous => !currentPlans.some(current => current.accountId === previous.accountId)).map(previous => ({ ...previous, id: uuidv4(), periodId, createdAt: now, updatedAt: now }));
-            const flowRows = buildRecurringFlowCopies(previousFlows, currentFlows, periodId, now, uuidv4);
-            if (planRows.length) await db.accountPlans.bulkAdd(planRows);
-            if (flowRows.length) await db.plannedCashFlows.bulkAdd(flowRows);
-            copiedPlans = planRows.length;
-            copiedFlows = flowRows.length;
-        });
-        setCopyOpen(false); setMessage(`Se copiaron ${copiedPlans} tasa(s) y ${copiedFlows} flujo(s) recurrente(s). Los ingresos únicos no se repitieron.`);
+        try {
+            const copied = await copyRecurringPlan(periodId, previousPeriodId);
+            setMessage(`Se copiaron ${copied.plans} tasa(s) y ${copied.flows} flujo(s) recurrente(s). Los ingresos únicos no se repitieron.`);
+        } catch (error) {
+            setMessage(error instanceof Error ? error.message : 'No fue posible copiar la planificación recurrente.');
+        } finally {
+            setCopyOpen(false);
+        }
     };
 
     return <div className="space-y-6"><div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between"><div><p className="text-sm font-medium text-emerald-700">Planificación</p><h1 className="page-title">Plan del mes</h1><p className="page-description">Compara por separado ingresos externos, rendimiento pasivo y gastos previstos.</p></div><div className="flex gap-2"><Button variant="outline" disabled={locked} onClick={() => setCopyOpen(true)}>Copiar recurrentes</Button><PeriodSelector /></div></div>{locked && <div className="rounded-xl bg-slate-100 px-4 py-3 text-sm text-slate-700">El periodo está cerrado. Reábrelo desde Cierre mensual para modificar su planificación.</div>}{message && <div className="rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{message}</div>}<div className="grid gap-4 md:grid-cols-3"><Metric title="Ingresos externos esperados" value={expectedIncome} /><Metric title="Rendimiento pasivo esperado" value={expectedReturn} /><Metric title="Gastos esperados" value={expectedExpenses} negative /></div>
         <Card><CardHeader><CardTitle>Tasas esperadas por cuenta</CardTitle><CardDescription>Solo estas tasas alimentan el rendimiento pasivo esperado; el salario se muestra aparte.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Cuenta</TableHead><TableHead>Modelo</TableHead><TableHead>Tasa</TableHead><TableHead>Saldo base</TableHead><TableHead>Rendimiento esperado</TableHead></TableRow></TableHeader><TableBody>{accounts.map(account => { const plan = plans.find(item => item.accountId === account.id); const balance = balanceFor(account.id); return <TableRow key={account.id}><TableCell className="font-medium">{account.name}</TableCell><TableCell><Select disabled={locked} value={plan?.type ?? 'FIXED_EA'} onValueChange={value => upsertPlan(account.id, { type: value as AccountPlan['type'] })}><SelectTrigger className="w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="FIXED_EA">Tasa EA</SelectItem><SelectItem value="VARIABLE_MONTHLY">Tasa mensual</SelectItem></SelectContent></Select></TableCell><TableCell><div className="flex items-center gap-2"><Input disabled={locked} className="w-28" type="number" step="any" value={plan?.type === 'VARIABLE_MONTHLY' ? plan.rateMonthly ?? 0 : (plan?.rateEA ?? 0) * 100} onChange={event => { const value = Number(event.target.value); upsertPlan(account.id, plan?.type === 'VARIABLE_MONTHLY' ? { rateMonthly: value } : { rateEA: value / 100 }); }} /><span className="text-xs text-slate-500">%</span></div></TableCell><TableCell>{formatCurrency(balance, account.currency)}</TableCell><TableCell>{formatCurrency(expectedPassiveReturn(balance, plan), account.currency)}</TableCell></TableRow>; })}</TableBody></Table></CardContent></Card>
-        <Card><CardHeader className="flex flex-row items-center justify-between"><div><CardTitle>Ingresos y gastos previstos</CardTitle><CardDescription>Al abrir el mes siguiente se trasladan automáticamente salarios y gastos recurrentes; los únicos no se repiten.</CardDescription></div><Button disabled={locked} onClick={() => setFlowOpen(true)}><Plus /> Agregar previsto</Button></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Cuenta</TableHead><TableHead>Tipo</TableHead><TableHead>Concepto</TableHead><TableHead>Recurrente</TableHead><TableHead className="text-right">Monto</TableHead><TableHead className="w-12" /></TableRow></TableHeader><TableBody>{flows.map(flow => <TableRow key={flow.id}><TableCell>{accounts.find(item => item.id === flow.accountId)?.name ?? 'Cuenta'}</TableCell><TableCell>{flow.type === 'SALARY' ? 'Salario' : flow.type === 'OTHER_INCOME' ? 'Otro ingreso' : 'Gasto'}</TableCell><TableCell>{flow.concept}</TableCell><TableCell>{flow.isRecurring ? 'Sí' : 'No'}</TableCell><TableCell className="text-right">{formatCurrency(flow.amount, flow.currency)}</TableCell><TableCell>{!locked && <DeleteButton itemName="flujo previsto" onDelete={() => db.plannedCashFlows.delete(flow.id)} />}</TableCell></TableRow>)}{flows.length === 0 && <TableRow><TableCell colSpan={6} className="h-24 text-center text-slate-500">No hay flujos previstos.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+        <Card><CardHeader className="flex flex-row items-center justify-between"><div><CardTitle>Ingresos y gastos previstos</CardTitle><CardDescription>Usa “Copiar recurrentes” (o Preparar en el cierre) para traer salarios y gastos recurrentes del mes anterior; los únicos no se repiten.</CardDescription></div><Button disabled={locked} onClick={() => setFlowOpen(true)}><Plus /> Agregar previsto</Button></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Cuenta</TableHead><TableHead>Tipo</TableHead><TableHead>Concepto</TableHead><TableHead>Recurrente</TableHead><TableHead className="text-right">Monto</TableHead><TableHead className="w-12" /></TableRow></TableHeader><TableBody>{flows.map(flow => <TableRow key={flow.id}><TableCell>{accounts.find(item => item.id === flow.accountId)?.name ?? 'Cuenta'}</TableCell><TableCell>{flow.type === 'SALARY' ? 'Salario' : flow.type === 'OTHER_INCOME' ? 'Otro ingreso' : 'Gasto'}</TableCell><TableCell>{flow.concept}</TableCell><TableCell>{flow.isRecurring ? 'Sí' : 'No'}</TableCell><TableCell className="text-right">{formatCurrency(flow.amount, flow.currency)}</TableCell><TableCell>{!locked && <DeleteButton itemName="flujo previsto" onDelete={() => db.plannedCashFlows.delete(flow.id)} />}</TableCell></TableRow>)}{flows.length === 0 && <TableRow><TableCell colSpan={6} className="h-24 text-center text-slate-500">No hay flujos previstos.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
         <PlannedFlowDialog open={flowOpen} onOpenChange={setFlowOpen} periodId={periodId} accounts={accounts} onSaved={() => setMessage('Flujo previsto guardado. No se contará como real hasta registrar el movimiento.')} />
         <AlertDialog open={copyOpen} onOpenChange={setCopyOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Copiar recurrentes de {previousPeriodId}</AlertDialogTitle><AlertDialogDescription>Se copiarán tasas, salarios y gastos marcados como recurrentes. Los ingresos únicos se omitirán y no se crearán movimientos reales.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction onClick={event => { event.preventDefault(); copyPrevious(); }}>Copiar recurrentes</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>;

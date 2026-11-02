@@ -1,4 +1,5 @@
 import { db } from '@/lib/db/db';
+import { checkBackupIntegrity } from '@/lib/db/backup-integrity';
 import type {
     Account,
     AccountEntry,
@@ -124,6 +125,9 @@ export function parseBackup(raw: unknown): BackupPayload {
     if (!isRecord(raw) || !isRecord(raw.tables)) {
         throw new Error('El archivo no tiene el formato de respaldo esperado.');
     }
+    if (typeof raw.version === 'number' && raw.version > BACKUP_VERSION) {
+        throw new Error(`El respaldo usa la versión ${raw.version} del formato y esta aplicación solo conoce hasta la ${BACKUP_VERSION}.`);
+    }
 
     const requiredTables: Array<keyof BackupTables> = [
         'periods',
@@ -145,7 +149,7 @@ export function parseBackup(raw: unknown): BackupPayload {
         assertIds(tableName, tableRows[tableName]);
     }
 
-    return {
+    const payload: BackupPayload = {
         version: typeof raw.version === 'number' ? raw.version : BACKUP_VERSION,
         exportedAt: typeof raw.exportedAt === 'string' ? raw.exportedAt : new Date().toISOString(),
         tables: {
@@ -168,6 +172,9 @@ export function parseBackup(raw: unknown): BackupPayload {
             obligationSnapshots: tableRows.obligationSnapshots as unknown as ObligationSnapshot[],
         },
     };
+    const { errors } = checkBackupIntegrity(payload.tables);
+    if (errors.length) throw new Error(`El respaldo tiene referencias rotas: ${errors.join(' · ')}`);
+    return payload;
 }
 
 export async function createBackup(): Promise<BackupPayload> {
@@ -189,7 +196,7 @@ export async function createBackup(): Promise<BackupPayload> {
         obligations,
         obligationEntries,
         obligationSnapshots,
-    ] = await Promise.all([
+    ] = await db.transaction('r', db.tables, () => Promise.all([
         db.periods.toArray(),
         db.entities.toArray(),
         db.accounts.toArray(),
@@ -207,7 +214,7 @@ export async function createBackup(): Promise<BackupPayload> {
         db.obligations.toArray(),
         db.obligationEntries.toArray(),
         db.obligationSnapshots.toArray(),
-    ]);
+    ]));
 
     return {
         version: BACKUP_VERSION,
