@@ -62,6 +62,7 @@ export interface Period {
   trmValidTo?: string;
   trmSource?: RateSource;
   acknowledgedUnexplained?: boolean;
+  ipcAnnual?: number; // Inflación anual (IPC, DANE) como fracción: 0.052 = 5,2%
 }
 
 export interface Entity {

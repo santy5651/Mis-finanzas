@@ -14,6 +14,7 @@ import {
     Menu,
     PiggyBank,
     Sparkles,
+    TrendingUp,
     X,
 } from 'lucide-react';
 
@@ -24,6 +25,7 @@ const navGroups = [
             { href: '/', label: 'Resumen', description: 'Tu panorama general', icon: BarChart3 },
             { href: '/cierre', label: 'Cierre mensual', description: 'Cinco pasos para cuadrar', icon: ClipboardCheck },
             { href: '/ingresos-proyectados', label: 'Planificación', description: 'Ingresos, gastos y tasas', icon: Sparkles },
+            { href: '/inversiones', label: 'Inversiones', description: 'Rentabilidad y proyección', icon: TrendingUp },
         ],
     },
     {
