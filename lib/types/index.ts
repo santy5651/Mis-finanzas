@@ -41,6 +41,7 @@ export type FinancialEventType =
 export type PlannedCashFlowType = 'SALARY' | 'OTHER_INCOME' | 'EXPENSE';
 /** How an account produces returns: credited interest, or market value changes (funds, brokers). */
 export type ReturnBehavior = 'INTEREST' | 'MARKET_VALUE';
+export type CardChargeKind = 'PURCHASE' | 'INTEREST' | 'FEE';
 export type ReturnKind =
   | 'INTEREST'
   | 'DIVIDEND'
@@ -237,6 +238,7 @@ export interface FinancialEvent {
   incomeId?: string;
   incomeKind?: 'SALARY' | 'OTHER_INCOME';
   returnKind?: ReturnKind; // Solo PASSIVE_RETURN; sin valor se infiere del perfil de la cuenta
+  chargeKind?: CardChargeKind; // Cargos a tarjeta registrados desde Obligaciones
   plannedCashFlowId?: string;
   obligationId?: string;
   installments?: number;
@@ -265,7 +267,9 @@ export interface Obligation {
   direction: ObligationDirection;
   type: ObligationType;
   currency: Currency;
-  dueDay?: number;
+  dueDay?: number; // Día de pago
+  statementDay?: number; // Día de corte (tarjetas)
+  creditLimit?: number; // Cupo total (tarjetas)
   notes?: string;
   legacySeriesId?: string;
   isActive: boolean;
@@ -294,5 +298,12 @@ export interface ObligationSnapshot {
   trmSource?: RateSource;
   notes?: string;
   createdAt: string;
+  updatedAt: string;
+}
+
+/** Key-value preferences that travel with the backup (alert thresholds, last backup date). */
+export interface AppSetting {
+  id: string;
+  value: unknown;
   updatedAt: string;
 }

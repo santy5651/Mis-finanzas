@@ -5,6 +5,8 @@ import { format } from 'date-fns';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '@/lib/db/db';
 import { createBackup, getBackupRecordCount, parseBackup, restoreBackup, type BackupPayload } from '@/lib/db/backup';
+import { saveSetting, SETTING_KEYS } from '@/lib/db/settings';
+import { AlertSettingsCard } from '@/components/config/alert-settings';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -54,6 +56,7 @@ export default function ConfigPage() {
         setMessage(null);
         try {
             const payload = await createBackup();
+            await saveSetting(SETTING_KEYS.lastBackupAt, new Date().toISOString());
             const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
@@ -179,6 +182,8 @@ export default function ConfigPage() {
                     )}
                 </CardContent>
             </Card>
+
+            <AlertSettingsCard />
 
             <Card>
                 <CardHeader className="border-b">

@@ -27,6 +27,19 @@ export interface NetWorthResult {
 
 const sum = (rows: Array<{ amount: number }>) => rows.reduce((total, row) => total + row.amount, 0);
 
+/** Real balance of the period, or last month's balance carried forward with this month's entries. */
+export function obligationBalance(
+    obligationId: string,
+    snapshots: ObligationSnapshot[],
+    previousSnapshots: ObligationSnapshot[],
+    entries: ObligationEntry[],
+): number {
+    const snapshot = snapshots.find(item => item.obligationId === obligationId);
+    if (snapshot) return snapshot.balance;
+    const previous = previousSnapshots.find(item => item.obligationId === obligationId);
+    return Math.max(0, (previous?.balance ?? 0) + sum(entries.filter(item => item.obligationId === obligationId)));
+}
+
 /**
  * Net worth for one period. A forgotten balance is estimated instead of dropped, so the month's
  * variation does not fall by that account's whole balance; a missing TRM is reported instead of
@@ -57,9 +70,7 @@ export function computeNetWorth(input: NetWorthInput): NetWorthResult {
     let payables = 0;
     for (const obligation of input.obligations) {
         const snapshot = input.obligationSnapshots.find(item => item.obligationId === obligation.id);
-        const previous = input.previousObligationSnapshots.find(item => item.obligationId === obligation.id);
-        const balance = snapshot?.balance
-            ?? Math.max(0, (previous?.balance ?? 0) + sum(input.obligationEntries.filter(item => item.obligationId === obligation.id)));
+        const balance = obligationBalance(obligation.id, input.obligationSnapshots, input.previousObligationSnapshots, input.obligationEntries);
         if (!balance) continue;
         const value = convertToCopOrNull(balance, obligation.currency, input.period, snapshot);
         if (value === null) missingRate.push(obligation.name);

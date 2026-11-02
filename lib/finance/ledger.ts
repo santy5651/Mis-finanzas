@@ -1,6 +1,7 @@
 import { db } from '@/lib/db/db';
 import type {
     AccountEntry,
+    CardChargeKind,
     Currency,
     Expense,
     FinancialEvent,
@@ -22,6 +23,7 @@ type EventInput = {
     notes?: string;
     incomeKind?: 'SALARY' | 'OTHER_INCOME';
     returnKind?: ReturnKind;
+    chargeKind?: CardChargeKind;
     plannedCashFlowId?: string;
 };
 
@@ -85,6 +87,7 @@ export async function saveFinancialEvent(
         notes: input.notes,
         incomeKind: input.incomeKind,
         returnKind: input.type === 'PASSIVE_RETURN' ? input.returnKind : undefined,
+        chargeKind: input.chargeKind,
         plannedCashFlowId: input.plannedCashFlowId,
         createdAt: now,
         updatedAt: now,

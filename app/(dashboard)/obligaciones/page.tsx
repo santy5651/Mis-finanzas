@@ -3,9 +3,10 @@
 import { useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { v4 as uuidv4 } from 'uuid';
-import { ArrowDownToLine, ArrowUpFromLine, CreditCard, HandCoins, Plus } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, CreditCard, HandCoins, Plus, Settings2 } from 'lucide-react';
 import { db } from '@/lib/db/db';
-import type { Currency, Obligation, ObligationDirection, ObligationType } from '@/lib/types';
+import type { CardChargeKind, Currency, Obligation, ObligationDirection, ObligationType } from '@/lib/types';
+import { CardDetails, CardSettingsDialog } from '@/components/obligations/card-details';
 import { saveFinancialEvent } from '@/lib/finance/ledger';
 import { dateInsidePeriod } from '@/lib/finance/period';
 import { useActivePeriod } from '@/lib/hooks/use-active-period';
@@ -30,6 +31,9 @@ export default function ObligationsPage() {
     const snapshots = useLiveQuery(() => db.obligationSnapshots.toArray()) ?? [];
     const currentEntries = useLiveQuery(() => db.obligationEntries.where('periodId').equals(periodId).toArray(), [periodId]) ?? [];
     const period = useLiveQuery(() => db.periods.get(periodId), [periodId]);
+    const cardExpenses = useLiveQuery(() => db.expenses.filter(item => Boolean(item.obligationId)).toArray()) ?? [];
+    const periodEvents = useLiveQuery(() => db.financialEvents.where('periodId').equals(periodId).toArray(), [periodId]) ?? [];
+    const [settingsCard, setSettingsCard] = useState<Obligation | null>(null);
     const [createOpen, setCreateOpen] = useState(false);
     const [actionTarget, setActionTarget] = useState<Obligation | null>(null);
     const [actionKind, setActionKind] = useState<ActionKind>('DECREASE');
@@ -61,7 +65,8 @@ export default function ObligationsPage() {
                                 </div>
                             </CardHeader>
                             <CardContent className="space-y-4">
-                                <div><p className="text-xs text-slate-500">Saldo del periodo</p><p className="text-2xl font-semibold">{formatCurrency(balance, item.currency)}</p></div>
+                                <div className="flex items-end justify-between gap-2"><div><p className="text-xs text-slate-500">Saldo del periodo</p><p className="text-2xl font-semibold">{formatCurrency(balance, item.currency)}</p></div>{item.type === 'CREDIT_CARD' && <Button size="sm" variant="ghost" onClick={() => setSettingsCard(item)}><Settings2 /> Configurar</Button>}</div>
+                                {item.type === 'CREDIT_CARD' && <CardDetails card={item} balance={balance} periodId={periodId} cardExpenses={cardExpenses.filter(expense => expense.obligationId === item.id)} events={periodEvents} entries={currentEntries} />}
                                 <div className="flex gap-2">
                                     <Button variant="outline" className="flex-1" onClick={() => { setActionTarget(item); setActionKind('INCREASE'); }}><ArrowUpFromLine />{direction === 'PAYABLE' ? 'Cargo' : 'Prestar'}</Button>
                                     <Button className="flex-1" onClick={() => { setActionTarget(item); setActionKind('DECREASE'); }}><ArrowDownToLine />{direction === 'PAYABLE' ? 'Pagar' : 'Cobrar'}</Button>
@@ -87,6 +92,7 @@ export default function ObligationsPage() {
                 <TabsContent value="payable" className="mt-5">{renderList('PAYABLE')}</TabsContent>
                 <TabsContent value="receivable" className="mt-5">{renderList('RECEIVABLE')}</TabsContent>
             </Tabs>
+            <CardSettingsDialog card={settingsCard} onClose={() => setSettingsCard(null)} onSaved={() => { setSettingsCard(null); setMessage('Datos de la tarjeta actualizados.'); }} />
             <CreateObligationDialog open={createOpen} onOpenChange={setCreateOpen} periodId={periodId} locked={period?.status === 'CLOSED'} entities={entities} onSaved={() => setMessage('Obligación creada. Su saldo inicial quedó registrado sin considerarse ingreso o rendimiento.')} />
             <ObligationActionDialog open={Boolean(actionTarget)} onOpenChange={open => !open && setActionTarget(null)} obligation={actionTarget} actionKind={actionKind} accounts={accounts} periodId={periodId} locked={period?.status === 'CLOSED'} onSaved={() => { setActionTarget(null); setMessage('Movimiento de obligación registrado y enlazado.'); }} />
         </div>
@@ -111,8 +117,10 @@ function CreateObligationDialog({ open, onOpenChange, periodId, locked, entities
 }
 
 function ObligationActionDialog({ open, onOpenChange, obligation, actionKind, accounts, periodId, locked, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; obligation: Obligation | null; actionKind: ActionKind; accounts: Array<{ id: string; name: string; currency: Currency }>; periodId: string; locked: boolean; onSaved: () => void }) {
-    const [amount, setAmount] = useState(''); const [accountId, setAccountId] = useState(''); const [concept, setConcept] = useState(''); const [error, setError] = useState<string | null>(null);
+    const [amount, setAmount] = useState(''); const [accountId, setAccountId] = useState(''); const [concept, setConcept] = useState(''); const [error, setError] = useState<string | null>(null); const [chargeKind, setChargeKind] = useState<CardChargeKind>('PURCHASE');
     if (!obligation) return null;
+    const cardCharge = obligation.type === 'CREDIT_CARD' && actionKind === 'INCREASE';
+    const chargeLabels: Record<CardChargeKind, string> = { PURCHASE: 'Compra', INTEREST: 'Intereses', FEE: 'Cuota de manejo o comisión' };
     const needsAccount = obligation.direction === 'RECEIVABLE' || actionKind === 'DECREASE';
     const save = async () => {
         if (locked) { setError('Reabre el mes antes de registrar este movimiento.'); return; }
@@ -121,8 +129,8 @@ function ObligationActionDialog({ open, onOpenChange, obligation, actionKind, ac
         const increase = actionKind === 'INCREASE';
         const type = obligation.direction === 'PAYABLE' ? (increase ? 'EXPENSE' : 'OBLIGATION_PAYMENT') : (increase ? 'RECEIVABLE_LOAN' : 'RECEIVABLE_COLLECTION');
         const accountAmount = account ? (obligation.direction === 'RECEIVABLE' ? (increase ? -parsed : parsed) : -parsed) : 0;
-        await saveFinancialEvent({ id: uuidv4(), periodId, date: dateInsidePeriod(periodId), type, concept: concept.trim() || (increase ? 'Aumento de obligación' : 'Reducción de obligación'), obligationId: obligation.id }, account ? [{ accountId: account.id, amount: accountAmount, currency: account.currency }] : [], [{ obligationId: obligation.id, amount: increase ? parsed : -parsed, currency: obligation.currency }]);
+        await saveFinancialEvent({ id: uuidv4(), periodId, date: dateInsidePeriod(periodId), type, concept: concept.trim() || (cardCharge ? `${chargeLabels[chargeKind]} ${obligation.name}` : increase ? 'Aumento de obligación' : 'Reducción de obligación'), obligationId: obligation.id, chargeKind: cardCharge ? chargeKind : undefined }, account ? [{ accountId: account.id, amount: accountAmount, currency: account.currency }] : [], [{ obligationId: obligation.id, amount: increase ? parsed : -parsed, currency: obligation.currency }]);
         setAmount(''); setConcept(''); setError(null); onSaved();
     };
-    return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{actionKind === 'INCREASE' ? (obligation.direction === 'PAYABLE' ? 'Registrar cargo' : 'Registrar préstamo') : (obligation.direction === 'PAYABLE' ? 'Registrar pago' : 'Registrar cobro')}</DialogTitle><DialogDescription>Se crearán las entradas enlazadas necesarias; no se duplicará como ingreso o gasto al mover el dinero.</DialogDescription></DialogHeader><div className="space-y-3"><div className="space-y-1"><Label>Monto ({obligation.currency})</Label><Input type="number" min="0" value={amount} onChange={event => setAmount(event.target.value)} /></div>{needsAccount && <div className="space-y-1"><Label>{actionKind === 'DECREASE' && obligation.direction === 'PAYABLE' ? 'Cuenta desde la que pagas' : 'Cuenta relacionada'}</Label><Select value={accountId} onValueChange={setAccountId}><SelectTrigger><SelectValue placeholder="Selecciona una cuenta" /></SelectTrigger><SelectContent>{accounts.filter(item => item.currency === obligation.currency).map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>}<div className="space-y-1"><Label>Concepto</Label><Input value={concept} onChange={event => setConcept(event.target.value)} /></div>{error && <p className="rounded-lg bg-red-50 p-2 text-sm text-red-700">{error}</p>}<Button className="w-full" onClick={save}>Guardar movimiento</Button></div></DialogContent></Dialog>;
+    return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent><DialogHeader><DialogTitle>{actionKind === 'INCREASE' ? (obligation.direction === 'PAYABLE' ? 'Registrar cargo' : 'Registrar préstamo') : (obligation.direction === 'PAYABLE' ? 'Registrar pago' : 'Registrar cobro')}</DialogTitle><DialogDescription>Se crearán las entradas enlazadas necesarias; no se duplicará como ingreso o gasto al mover el dinero.</DialogDescription></DialogHeader><div className="space-y-3"><div className="space-y-1"><Label>Monto ({obligation.currency})</Label><Input type="number" min="0" value={amount} onChange={event => setAmount(event.target.value)} /></div>{needsAccount && <div className="space-y-1"><Label>{actionKind === 'DECREASE' && obligation.direction === 'PAYABLE' ? 'Cuenta desde la que pagas' : 'Cuenta relacionada'}</Label><Select value={accountId} onValueChange={setAccountId}><SelectTrigger><SelectValue placeholder="Selecciona una cuenta" /></SelectTrigger><SelectContent>{accounts.filter(item => item.currency === obligation.currency).map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>}{cardCharge && <div className="space-y-1"><Label>Tipo de cargo</Label><Select value={chargeKind} onValueChange={value => setChargeKind(value as CardChargeKind)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{(Object.keys(chargeLabels) as CardChargeKind[]).map(kind => <SelectItem key={kind} value={kind}>{chargeLabels[kind]}</SelectItem>)}</SelectContent></Select>{chargeKind === 'PURCHASE' && <p className="text-xs text-slate-500">Para compras a cuotas usa el gasto rápido o Movimientos → Gastos: así queda la categoría y el plan de cuotas.</p>}</div>}<div className="space-y-1"><Label>Concepto</Label><Input value={concept} onChange={event => setConcept(event.target.value)} /></div>{error && <p className="rounded-lg bg-red-50 p-2 text-sm text-red-700">{error}</p>}<Button className="w-full" onClick={save}>Guardar movimiento</Button></div></DialogContent></Dialog>;
 }

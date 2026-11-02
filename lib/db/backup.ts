@@ -3,6 +3,7 @@ import { checkBackupIntegrity } from '@/lib/db/backup-integrity';
 import type {
     Account,
     AccountEntry,
+    AppSetting,
     AccountMovement,
     AccountPlan,
     AccountSnapshot,
@@ -40,6 +41,7 @@ export const BACKUP_TABLE_NAMES = [
     'obligations',
     'obligationEntries',
     'obligationSnapshots',
+    'settings',
 ] as const;
 
 export interface BackupTables {
@@ -60,6 +62,7 @@ export interface BackupTables {
     obligations: Obligation[];
     obligationEntries: ObligationEntry[];
     obligationSnapshots: ObligationSnapshot[];
+    settings: AppSetting[];
 }
 
 export interface BackupPayload {
@@ -170,6 +173,7 @@ export function parseBackup(raw: unknown): BackupPayload {
             obligations: tableRows.obligations as unknown as Obligation[],
             obligationEntries: tableRows.obligationEntries as unknown as ObligationEntry[],
             obligationSnapshots: tableRows.obligationSnapshots as unknown as ObligationSnapshot[],
+            settings: tableRows.settings as unknown as AppSetting[],
         },
     };
     const { errors } = checkBackupIntegrity(payload.tables);
@@ -196,6 +200,7 @@ export async function createBackup(): Promise<BackupPayload> {
         obligations,
         obligationEntries,
         obligationSnapshots,
+        settings,
     ] = await db.transaction('r', db.tables, () => Promise.all([
         db.periods.toArray(),
         db.entities.toArray(),
@@ -214,6 +219,7 @@ export async function createBackup(): Promise<BackupPayload> {
         db.obligations.toArray(),
         db.obligationEntries.toArray(),
         db.obligationSnapshots.toArray(),
+        db.settings.toArray(),
     ]));
 
     return {
@@ -237,6 +243,7 @@ export async function createBackup(): Promise<BackupPayload> {
             obligations,
             obligationEntries,
             obligationSnapshots,
+            settings,
         },
     };
 }
@@ -418,6 +425,7 @@ export async function restoreBackup(backup: BackupPayload): Promise<void> {
         db.obligations,
         db.obligationEntries,
         db.obligationSnapshots,
+        db.settings,
     ];
 
     await db.transaction('rw', tables, async () => {
@@ -440,6 +448,7 @@ export async function restoreBackup(backup: BackupPayload): Promise<void> {
             db.obligations.bulkAdd(prepared.tables.obligations),
             db.obligationEntries.bulkAdd(prepared.tables.obligationEntries),
             db.obligationSnapshots.bulkAdd(prepared.tables.obligationSnapshots),
+            db.settings.bulkAdd(prepared.tables.settings),
         ]);
     });
 }

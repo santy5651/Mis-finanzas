@@ -16,7 +16,7 @@ const requiredTables = [
 const optionalTables = [
     'projectedIncomeItems', 'projectedIncomes', 'accountMovements',
     'accountPlans', 'plannedCashFlows', 'financialEvents', 'accountEntries',
-    'obligations', 'obligationEntries', 'obligationSnapshots',
+    'obligations', 'obligationEntries', 'obligationSnapshots', 'settings',
 ];
 
 async function resolveBackupPath() {

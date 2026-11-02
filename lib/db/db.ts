@@ -3,6 +3,7 @@ import Dexie, { type Table } from 'dexie';
 import type {
     Account,
     AccountCategory,
+    AppSetting,
     AccountEntry,
     AccountMovement,
     AccountPlan,
@@ -27,7 +28,7 @@ export type {
     Period, Entity, Account, AccountSnapshot,
     Income, Expense, Debt, ProjectedIncome, AccountMovement, ProjectedIncomeItem,
     AccountPlan, PlannedCashFlow, FinancialEvent, AccountEntry,
-    Obligation, ObligationEntry, ObligationSnapshot
+    Obligation, ObligationEntry, ObligationSnapshot, AppSetting
 } from '@/lib/types';
 
 export class PersonalEconomyDB extends Dexie {
@@ -48,6 +49,7 @@ export class PersonalEconomyDB extends Dexie {
     obligations!: Table<Obligation>;
     obligationEntries!: Table<ObligationEntry>;
     obligationSnapshots!: Table<ObligationSnapshot>;
+    settings!: Table<AppSetting>;
 
     constructor() {
         super('PersonalEconomyDB');
@@ -438,6 +440,28 @@ export class PersonalEconomyDB extends Dexie {
                 })),
             ];
             if (legacyEvents.length) await eventTable.bulkPut(legacyEvents);
+        });
+
+        // v13 only adds a key-value table; existing data needs no upgrade.
+        this.version(13).stores({
+            periods: 'id, year, month, status',
+            entities: 'id, name, type',
+            accounts: 'id, entityId, *categories, isActive',
+            accountSnapshots: 'id, periodId, accountId, [periodId+accountId]',
+            incomes: 'id, periodId, date, isSalary',
+            expenses: 'id, periodId, date, reason',
+            debts: 'id, periodId, entityId, seriesId',
+            projectedIncomes: 'id, periodId, date, entityId, accountId, type, isRecurring',
+            accountMovements: 'id, periodId, accountId, type, date, transferGroupId, [periodId+accountId]',
+            projectedIncomeItems: 'id, periodId, accountId, type, [periodId+accountId]',
+            accountPlans: 'id, periodId, accountId, [periodId+accountId]',
+            plannedCashFlows: 'id, periodId, accountId, type, isRecurring, [periodId+accountId]',
+            financialEvents: 'id, periodId, date, type, legacySourceId',
+            accountEntries: 'id, eventId, periodId, accountId, [periodId+accountId]',
+            obligations: 'id, entityId, direction, type, isActive, legacySeriesId',
+            obligationEntries: 'id, eventId, periodId, obligationId, [periodId+obligationId]',
+            obligationSnapshots: 'id, periodId, obligationId, [periodId+obligationId]',
+            settings: 'id',
         });
     }
 }
