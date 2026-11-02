@@ -85,6 +85,7 @@ export const expenseSchema = z.object({
     currency: currencySchema,
     method: expenseMethodSchema,
     installments: z.coerce.number().int().min(1),
+    category: z.enum(['FOOD', 'TRANSPORT', 'HOME', 'HEALTH', 'SUBSCRIPTIONS', 'LEISURE', 'SHOPPING', 'OTHER']).optional(),
     isRecurring: z.boolean().optional(),
     notes: z.string().optional(),
     paymentAccountId: z.string().uuid().optional(),

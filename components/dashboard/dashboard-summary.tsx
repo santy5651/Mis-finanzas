@@ -5,7 +5,8 @@ import { format, parse, subMonths } from 'date-fns';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ArrowDownRight, ArrowUpRight, CircleAlert, CircleDollarSign, Landmark, ReceiptText, Sparkles, WalletCards } from 'lucide-react';
 import { db } from '@/lib/db/db';
-import type { Currency } from '@/lib/types';
+import type { Currency, ExpenseCategory } from '@/lib/types';
+import { EXPENSE_CATEGORY_LABELS, guessCategory, resolveCategory } from '@/lib/finance/categories';
 import { calculateAccountReconciliation, calculateFxEffect, expectedPassiveReturn } from '@/lib/finance/reconciliation';
 import { convertToCop, convertToCopOrNull, resolveUsdCopRate } from '@/lib/finance/currency';
 import { computeNetWorth } from '@/lib/finance/networth';
@@ -73,6 +74,15 @@ export function DashboardSummary() {
             return sum + impact;
         }, 0);
         const actualExpenses = recordedExpenses + obligationOnlyExpenses;
+        const spendingByCategory = new Map<ExpenseCategory, number>();
+        const addSpending = (category: ExpenseCategory, value: number) => spendingByCategory.set(category, (spendingByCategory.get(category) ?? 0) + value);
+        expenses.forEach(item => addSpending(resolveCategory(item), convertToCop(item.amount, item.currency, period)));
+        events.filter(event => event.type === 'EXPENSE' && !event.expenseId).forEach(event => {
+            const impact = obligationEntries.filter(entry => entry.eventId === event.id && entry.amount > 0).reduce((sum, entry) => sum + convertToCop(entry.amount, entry.currency, period), 0)
+                + entries.filter(entry => entry.eventId === event.id && entry.amount < 0).reduce((sum, entry) => sum + Math.abs(convertToCop(entry.amount, entry.currency, period)), 0);
+            addSpending(guessCategory(event.concept) ?? 'OTHER', impact);
+        });
+        const categorySpending = [...spendingByCategory.entries()].filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]);
         const expectedExternalIncome = plannedFlows.filter(item => item.type !== 'EXPENSE').reduce((sum, item) => sum + convertToCop(item.amount, item.currency, period), 0);
         const expectedExpenses = plannedFlows.filter(item => item.type === 'EXPENSE').reduce((sum, item) => sum + convertToCop(item.amount, item.currency, period), 0);
         const expectedReturn = rows.reduce((sum, row) => sum + convertToCop(row.expected, row.account.currency, period, row.snapshot), 0);
@@ -80,7 +90,7 @@ export function DashboardSummary() {
         const fxEffect = rows.reduce((sum, row) => sum + row.fxEffect, 0);
         const netWorth = current.netWorth;
         const hasPrevious = previousSnapshots.length > 0 || previousObligationSnapshots.length > 0;
-        return { rows, netWorth, variation: hasPrevious ? netWorth - previous.netWorth : 0, estimatedAccounts: current.estimatedAccounts, previousEstimated: previous.estimatedAccounts, missingRate, usdEntriesWithoutRate, previousMissingRate: previous.missingRate, assets, payables, receivables, actualExternalIncome, actualSalary, actualOtherIncome, expectedExternalIncome, returns, expectedReturn, expectedInterest, actualExpenses, expectedExpenses, cashFlow, fxEffect, projectedNext: netWorth + expectedExternalIncome + expectedReturn - expectedExpenses };
+        return { rows, netWorth, variation: hasPrevious ? netWorth - previous.netWorth : 0, categorySpending, estimatedAccounts: current.estimatedAccounts, previousEstimated: previous.estimatedAccounts, missingRate, usdEntriesWithoutRate, previousMissingRate: previous.missingRate, assets, payables, receivables, actualExternalIncome, actualSalary, actualOtherIncome, expectedExternalIncome, returns, expectedReturn, expectedInterest, actualExpenses, expectedExpenses, cashFlow, fxEffect, projectedNext: netWorth + expectedExternalIncome + expectedReturn - expectedExpenses };
     }, [periodId, previousPeriodId, twoBackPeriodId]);
     const [sort, setSort] = useState<'balance' | 'unexplained' | 'name'>('balance');
     if (!data) return <div className="h-48 animate-pulse rounded-xl bg-slate-100" />;
@@ -91,10 +101,17 @@ export function DashboardSummary() {
         <DataQualityNotices periodId={periodId} previousPeriodId={previousPeriodId} missingRate={data.missingRate} usdEntriesWithoutRate={data.usdEntriesWithoutRate} previousMissingRate={data.previousMissingRate} estimated={data.estimatedAccounts.map(item => item.name)} previousEstimated={data.previousEstimated.map(item => item.name)} />
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Metric title="Patrimonio neto" value={data.netWorth} description="Activos + por cobrar − por pagar" icon={Landmark} featured /><Metric title="Variación patrimonial" value={data.variation} description="Frente al cierre anterior" icon={variationPositive ? ArrowUpRight : ArrowDownRight} tone={variationPositive ? 'positive' : 'negative'} /><Metric title="Cuentas por cobrar" value={data.receivables} description="Dinero que otras personas te deben" icon={CircleDollarSign} /><Metric title="Deuda pendiente" value={data.payables} description="Tarjetas y demás obligaciones" icon={WalletCards} tone="warning" /></div>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"><CompareMetric title="Ingresos externos" expected={data.expectedExternalIncome} actual={data.actualExternalIncome} description={`Salario ${formatCurrency(data.actualSalary)} · Otros ${formatCurrency(data.actualOtherIncome)}`} icon={CircleDollarSign} /><CompareMetric title="Rendimiento cobrado" expected={data.expectedInterest} actual={data.returns.collected} description={`Intereses y dividendos · ${formatCurrency(data.returns.availableForSpending)} disponibles para gastos`} icon={Sparkles} /><CompareMetric title="Gastos" expected={data.expectedExpenses} actual={data.actualExpenses} description="Compras y consumos" icon={ReceiptText} negative /><CompareMetric title="Flujo de caja" expected={0} actual={data.cashFlow} description="Entradas y salidas; sin traslados" icon={WalletCards} /></div>
+        <CategorySpending items={data.categorySpending} total={data.actualExpenses} />
         <ReturnsBreakdown returns={data.returns} fxEffect={data.fxEffect} expectedReturn={data.expectedReturn} />
         <Card><CardHeader className="border-b"><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><CardTitle>Conciliación por cuenta</CardTitle><CardDescription>El saldo cambia por flujos explicados; lo pendiente nunca se considera rendimiento.</CardDescription></div><label className="text-xs text-slate-500">Ordenar por <select value={sort} onChange={event => setSort(event.target.value as typeof sort)} className="ml-2 rounded-lg border bg-white px-2 py-1.5 text-sm"><option value="balance">Mayor saldo</option><option value="unexplained">Mayor diferencia</option><option value="name">Nombre</option></select></label></div></CardHeader><CardContent className="px-0 sm:px-6"><Table><TableHeader><TableRow><TableHead>Cuenta</TableHead><TableHead className="text-right">Inicial</TableHead><TableHead className="text-right">Ingresos externos</TableHead><TableHead className="text-right">Transferencias</TableHead><TableHead className="text-right" title="Gastos, pagos, cobros y ajustes registrados en la cuenta">Gastos y ajustes</TableHead><TableHead className="text-right">Esperado</TableHead><TableHead className="text-right">Real confirmado</TableHead><TableHead className="text-right">Sin explicar</TableHead><TableHead className="text-right">Final</TableHead></TableRow></TableHeader><TableBody>{rows.map(row => <TableRow key={row.account.id}><TableCell><span className="font-medium">{row.account.name}</span><span className="block text-xs text-slate-500">{row.entity}{row.fxEffect ? ` · efecto TRM ${formatCurrency(row.fxEffect)}` : ''}</span></TableCell><Money value={row.openingBalance} currency={row.account.currency} /><Money value={row.externalIncome} currency={row.account.currency} /><Money value={row.transfers} currency={row.account.currency} /><Money value={row.expenses + row.adjustments} currency={row.account.currency} /><Money value={row.expected} currency={row.account.currency} /><Money value={row.passiveReturn} currency={row.account.currency} colored /><Money value={row.unexplained} currency={row.account.currency} warning /><Money value={row.snapshot.balance} currency={row.account.currency} /></TableRow>)}{rows.length === 0 && <TableRow><TableCell colSpan={9} className="h-28 text-center text-slate-500">Completa el cierre mensual para ver la conciliación.</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
         <div className="rounded-xl border bg-white p-4 text-sm text-slate-700"><strong>Próximo cierre proyectado: {formatCurrency(data.projectedNext)}</strong><span className="ml-2 text-slate-500">Patrimonio + ingresos externos + rendimiento pasivo − gastos previstos. Las transferencias no cambian el resultado.</span></div>
     </div>;
+}
+
+function CategorySpending({ items, total }: { items: Array<[ExpenseCategory, number]>; total: number }) {
+    if (!items.length) return null;
+    const max = items[0][1];
+    return <Card><CardHeader className="border-b"><CardTitle>Gastos por categoría</CardTitle><CardDescription>Los gastos sin categoría se clasifican por su descripción; puedes corregirlos editando el gasto.</CardDescription></CardHeader><CardContent className="space-y-2 pt-4">{items.map(([category, value]) => <div key={category} className="grid grid-cols-[9rem_1fr_auto] items-center gap-3 text-sm"><span className="text-slate-700">{EXPENSE_CATEGORY_LABELS[category]}</span><div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-rose-400" style={{ width: `${Math.max(2, (value / max) * 100)}%` }} /></div><span className="text-right tabular-nums text-slate-900">{formatCurrency(value)}<span className="ml-2 text-xs text-slate-500">{total ? Math.round((value / total) * 100) : 0}%</span></span></div>)}</CardContent></Card>;
 }
 
 function DataQualityNotices({ periodId, previousPeriodId, missingRate, usdEntriesWithoutRate, previousMissingRate, estimated, previousEstimated }: { periodId: string; previousPeriodId: string; missingRate: string[]; usdEntriesWithoutRate: number; previousMissingRate: string[]; estimated: string[]; previousEstimated: string[] }) {

@@ -16,6 +16,7 @@ import { useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { saveExpenseWithLedger } from '@/lib/finance/ledger';
 import { dateInsidePeriod } from '@/lib/finance/period';
+import { EXPENSE_CATEGORIES, EXPENSE_CATEGORY_LABELS, guessCategory, resolveCategory } from '@/lib/finance/categories';
 import { useState } from 'react';
 
 type ExpenseFormValues = z.infer<typeof expenseSchema>;
@@ -46,6 +47,7 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
             reason: defaultValues?.reason ?? '',
             method: defaultValues?.method ?? 'DEBIT',
             installments: defaultValues?.installments ?? 1,
+            category: defaultValues?.category ?? (defaultValues?.reason ? resolveCategory({ reason: defaultValues.reason }) : undefined),
             entityId: defaultValues?.entityId ?? undefined,
             isRecurring: defaultValues?.isRecurring ?? false,
             notes: defaultValues?.notes ?? undefined,
@@ -62,8 +64,10 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
         }
     }, [periodId, form, defaultValues]);
 
-    async function onSubmit(data: ExpenseFormValues) {
+    async function onSubmit(formData: ExpenseFormValues) {
         setSaveError(null);
+        // The period follows the chosen date, so an expense dated next month lands in next month.
+        const data = { ...formData, periodId: formData.date.slice(0, 7), category: formData.category ?? guessCategory(formData.reason) ?? 'OTHER' };
         try {
             if (period?.status === 'CLOSED') {
                 setSaveError('Reabre el mes antes de registrar o editar gastos.');
@@ -101,6 +105,7 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
     }
 
     const selectedMethod = useWatch({ control: form.control, name: 'method' });
+    const reasonValue = useWatch({ control: form.control, name: 'reason' });
     const selectedCurrency = useWatch({ control: form.control, name: 'currency' });
 
     return (
@@ -140,19 +145,42 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                     />
                 </div>
 
-                <FormField
-                    control={form.control}
-                    name="reason"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Razon / Descripcion</FormLabel>
-                            <FormControl>
-                                <Input placeholder="Ej: Mercado, Gasolina..." {...field} />
-                            </FormControl>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
+                <div className="grid grid-cols-2 gap-4">
+                    <FormField
+                        control={form.control}
+                        name="reason"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Razon / Descripcion</FormLabel>
+                                <FormControl>
+                                    <Input placeholder="Ej: Mercado, Gasolina..." {...field} />
+                                </FormControl>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+
+                    <FormField
+                        control={form.control}
+                        name="category"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Categoría</FormLabel>
+                                <Select onValueChange={field.onChange} value={field.value ?? ''}>
+                                    <FormControl>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder={`Automática: ${EXPENSE_CATEGORY_LABELS[guessCategory(reasonValue ?? '') ?? 'OTHER']}`} />
+                                        </SelectTrigger>
+                                    </FormControl>
+                                    <SelectContent>
+                                        {EXPENSE_CATEGORIES.map(item => <SelectItem key={item} value={item}>{EXPENSE_CATEGORY_LABELS[item]}</SelectItem>)}
+                                    </SelectContent>
+                                </Select>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                </div>
 
                 <div className="grid grid-cols-2 gap-4">
                     <FormField

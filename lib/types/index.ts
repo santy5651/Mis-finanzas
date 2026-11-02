@@ -12,6 +12,15 @@ export type AccountCategory =
   | 'RETIREMENT'
   | 'OTHER';
 export type ExpenseMethod = 'DEBIT' | 'CREDIT_CARD' | 'CASH' | 'TRANSFER' | 'OTHER';
+export type ExpenseCategory =
+  | 'FOOD'
+  | 'TRANSPORT'
+  | 'HOME'
+  | 'HEALTH'
+  | 'SUBSCRIPTIONS'
+  | 'LEISURE'
+  | 'SHOPPING'
+  | 'OTHER';
 export type DebtType = 'CREDIT_CARD' | 'PERSONAL' | 'LOAN' | 'OTHER';
 export type ProjectedIncomeType = 'FIXED_EA' | 'VARIABLE_MONTHLY' | 'ONE_TIME' | 'SALARY';
 export type AccountMovementType = 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER_IN' | 'TRANSFER_OUT';
@@ -118,6 +127,7 @@ export interface Expense {
   currency: Currency;
   method: ExpenseMethod;
   installments: number; // Defecto 1
+  category?: ExpenseCategory; // Sin valor se deduce de la razón
   isRecurring?: boolean; // Gasto mensual persistente
   notes?: string;
   paymentAccountId?: string;

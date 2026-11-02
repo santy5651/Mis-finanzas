@@ -8,6 +8,7 @@ import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { PeriodSelector } from '@/components/dashboard/period-selector';
 import { DashboardSummary } from '@/components/dashboard/dashboard-summary';
 import { DashboardCharts } from '@/components/dashboard/dashboard-charts';
+import { QuickExpenseBar } from '@/components/forms/quick-expense-bar';
 import { db } from '@/lib/db/db';
 import { dateInsidePeriod } from '@/lib/finance/period';
 import { Input } from '@/components/ui/input';
@@ -30,6 +31,8 @@ export default function DashboardPage() {
                     <PeriodSelector />
                 </div>
             </div>
+
+            <QuickExpenseBar />
 
             <DashboardSummary />
 
