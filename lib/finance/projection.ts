@@ -30,6 +30,8 @@ export interface Scenario {
     /** Expected annual return of market-value accounts, as a fraction. */
     marketReturn: number;
     includePlannedFlows: boolean;
+    /** Simulated annual rate that replaces the plan of every unrestricted interest account, planned or not. */
+    interestRateOverride?: number | null;
 }
 
 export interface ProjectionMonth {
@@ -47,6 +49,18 @@ export interface ProjectionMonth {
 const monthlyFromAnnual = (annual: number) => Math.pow(1 + annual, 1 / 12) - 1;
 
 /**
+ * Effective annual rate an account earns under a scenario, or null when it earns nothing.
+ * Restricted accounts (cesantías) keep their own rate: a simulated savings rate does not apply to them.
+ * Monthly compounding of this rate gives exactly balance × rate over twelve months.
+ */
+export function scenarioRate(account: ProjectionAccount, scenario: Scenario): number | null {
+    if (account.behavior === 'MARKET_VALUE') return scenario.marketReturn;
+    const override = scenario.interestRateOverride;
+    const base = override !== undefined && override !== null && !account.restricted ? override : account.annualRate;
+    return base === null ? null : Math.max(0, base + scenario.rateShiftPoints / 100);
+}
+
+/**
  * Twelve months ahead under explicit assumptions. Interest is reinvested in its own account,
  * market accounts grow at the scenario rate, and planned net savings pile up without return,
  * which keeps the estimate on the conservative side.
@@ -54,7 +68,6 @@ const monthlyFromAnnual = (annual: number) => Math.pow(1 + annual, 1 / 12) - 1;
 export function projectTwelveMonths(input: ProjectionInput, scenario: Scenario): ProjectionMonth[] {
     const balances = new Map(input.accounts.map(account => [account.id, account.balance]));
     const start = parse(input.fromPeriodId, 'yyyy-MM', new Date());
-    const marketMonthly = monthlyFromAnnual(scenario.marketReturn);
     const netSavings = scenario.includePlannedFlows ? input.monthlyIncome - input.monthlyExpenses : 0;
     let savedCash = 0;
 
@@ -64,14 +77,14 @@ export function projectTwelveMonths(input: ProjectionInput, scenario: Scenario):
         let marketGain = 0;
         for (const account of input.accounts) {
             const balance = balances.get(account.id)!;
+            const rate = scenarioRate(account, scenario);
             if (account.behavior === 'MARKET_VALUE') {
-                const gain = balance * marketMonthly;
+                const gain = balance * monthlyFromAnnual(rate ?? 0);
                 marketGain += gain;
                 balances.set(account.id, balance + gain);
                 continue;
             }
-            if (account.annualRate === null) continue;
-            const rate = Math.max(0, account.annualRate + scenario.rateShiftPoints / 100);
+            if (rate === null) continue;
             const interest = balance * monthlyFromAnnual(rate);
             if (account.restricted) interestRestricted += interest;
             else interestAvailable += interest;
@@ -92,4 +105,11 @@ export function projectTwelveMonths(input: ProjectionInput, scenario: Scenario):
             coverage: input.monthlyExpenses > 0 ? interestAvailable / input.monthlyExpenses : null,
         };
     });
+}
+
+/** Balance-weighted planned rate of the unrestricted interest accounts that have a plan, or null when none has. */
+export function averagePlannedRate(accounts: ProjectionAccount[]): number | null {
+    const planned = accounts.filter(account => account.behavior === 'INTEREST' && !account.restricted && account.annualRate !== null && account.balance > 0);
+    const total = planned.reduce((sum, account) => sum + account.balance, 0);
+    return total > 0 ? planned.reduce((sum, account) => sum + account.balance * account.annualRate!, 0) / total : null;
 }

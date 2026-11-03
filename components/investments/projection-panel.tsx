@@ -4,13 +4,14 @@ import { useMemo, useState } from 'react';
 import { format, parse } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { projectTwelveMonths, type ProjectionInput } from '@/lib/finance/projection';
+import { averagePlannedRate, projectTwelveMonths, type ProjectionInput } from '@/lib/finance/projection';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatCurrency } from '@/lib/utils';
 
 const pct = (value: number | null) => value === null ? '—' : `${Math.round(value * 100)}%`;
+export const ratePct = (value: number) => `${(value * 100).toLocaleString('es-CO', { maximumFractionDigits: 2 })}%`;
 const label = (periodId: string) => format(parse(periodId, 'yyyy-MM', new Date()), 'MMM yy', { locale: es });
 
 export function ProjectionPanel({ input, defaultMarketReturn }: { input: ProjectionInput; defaultMarketReturn: number }) {
@@ -27,6 +28,7 @@ export function ProjectionPanel({ input, defaultMarketReturn }: { input: Project
     const totalMarket = months.reduce((sum, month) => sum + month.marketGain, 0);
     const last = months[months.length - 1];
     const coverage = input.monthlyExpenses > 0 ? totalAvailable / 12 / input.monthlyExpenses : null;
+    const averageRate = averagePlannedRate(input.accounts);
 
     return (
         <div className="space-y-4">
@@ -37,8 +39,13 @@ export function ProjectionPanel({ input, defaultMarketReturn }: { input: Project
                 </CardHeader>
                 <CardContent className="grid gap-4 pt-4 md:grid-cols-3">
                     <label className="space-y-1 text-sm">
-                        <span className="text-slate-600">Cambio en las tasas: <strong>{rateShift > 0 ? '+' : ''}{rateShift.toLocaleString('es-CO')} puntos</strong></span>
+                        <span className="block text-slate-600">¿Y si los bancos cambian las tasas?</span>
                         <input type="range" min="-4" max="4" step="0.25" value={rateShift} onChange={event => setRateShift(Number(event.target.value))} className="w-full accent-emerald-600" />
+                        <span className="block text-xs text-slate-500">
+                            {rateShift === 0
+                                ? 'Sin cambios: se usan las tasas de tu Plan del mes. Mueve la barra para subirlas o bajarlas todas a la vez.'
+                                : <><strong>{rateShift > 0 ? 'Suben' : 'Bajan'} {Math.abs(rateShift).toLocaleString('es-CO')} {Math.abs(rateShift) === 1 ? 'punto' : 'puntos'}</strong>{averageRate !== null && `: tu tasa promedio pasaría de ${ratePct(averageRate)} a ${ratePct(Math.max(0, averageRate + rateShift / 100))} E.A.`}</>}
+                        </span>
                     </label>
                     <label className="space-y-1 text-sm">
                         <span className="text-slate-600">Rentabilidad esperada de inversiones de mercado (% E.A.)</span>

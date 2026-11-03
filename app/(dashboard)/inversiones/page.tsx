@@ -9,6 +9,7 @@ import { obligationBalance } from '@/lib/finance/networth';
 import type { ProjectionInput } from '@/lib/finance/projection';
 import { buildPerformance, PerformanceTable } from '@/components/investments/performance-table';
 import { ProjectionPanel } from '@/components/investments/projection-panel';
+import { SimulationPanel } from '@/components/investments/simulation-panel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export default function InvestmentsPage() {
@@ -89,13 +90,18 @@ export default function InvestmentsPage() {
             </div>
             {!data ? <div className="h-48 animate-pulse rounded-xl bg-slate-100" /> : (
                 <Tabs defaultValue="rentabilidad">
-                    <TabsList><TabsTrigger value="rentabilidad">Rentabilidad</TabsTrigger><TabsTrigger value="proyeccion">Proyección a 12 meses</TabsTrigger></TabsList>
+                    <TabsList><TabsTrigger value="rentabilidad">Rentabilidad</TabsTrigger><TabsTrigger value="proyeccion">Proyección a 12 meses</TabsTrigger><TabsTrigger value="simulacion">Simulación</TabsTrigger></TabsList>
                     <TabsContent value="rentabilidad" className="mt-5"><PerformanceTable data={data.performance} inflation={data.inflation} /></TabsContent>
                     <TabsContent value="proyeccion" className="mt-5 space-y-3">
                         {data.missingRate.length > 0 && <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Sin TRM en {data.projection?.fromPeriodId}: {data.missingRate.join(', ')} no se incluye{data.missingRate.length > 1 ? 'n' : ''} en la proyección.</p>}
                         {data.projection
                             ? <ProjectionPanel key={data.projection.fromPeriodId} input={data.projection} defaultMarketReturn={defaultMarketReturn} />
                             : <p className="rounded-xl border border-dashed p-10 text-center text-sm text-slate-500">Registra los saldos de un cierre para proyectar.</p>}
+                    </TabsContent>
+                    <TabsContent value="simulacion" className="mt-5">
+                        {data.projection
+                            ? <SimulationPanel key={data.projection.fromPeriodId} input={data.projection} defaultMarketReturn={defaultMarketReturn} />
+                            : <p className="rounded-xl border border-dashed p-10 text-center text-sm text-slate-500">Registra los saldos de un cierre para simular.</p>}
                     </TabsContent>
                 </Tabs>
             )}

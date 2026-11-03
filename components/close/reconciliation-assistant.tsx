@@ -151,6 +151,7 @@ export function ReconciliationAssistant({ periodId, nextPeriodId, locked, rows, 
                     <CardDescription>Para cada diferencia, el asistente pregunta qué pasó. Nada se clasifica solo: una diferencia no es rendimiento hasta que lo confirmes.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                    <Glossary />
                     {rows.map(row => (
                         <AccountRow
                             key={row.account.id}
@@ -198,24 +199,28 @@ function AccountRow({ row, locked, nextPeriodId, interestValue, onInterestChange
 
     return (
         <div className="rounded-xl border p-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                    <p className="font-semibold">{account.name}{market && <span className="ml-2 text-xs font-normal text-slate-500">valor de mercado</span>}</p>
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="space-y-1">
+                    <p className="font-semibold">{account.name}{market && <span className="ml-2 text-xs font-normal text-slate-500">cambia de valor</span>}</p>
+                    <p className="text-xs text-slate-600">
+                        Saldo anterior {formatCurrency(row.openingBalance, currency)} → saldo real {formatCurrency(row.current.balance, currency)}: <strong>cambió {formatCurrency(row.balanceChange, currency)}</strong>
+                    </p>
                     <p className="text-xs text-slate-500">
-                        Inicial {formatCurrency(row.openingBalance, currency)} · Ingresos {formatCurrency(row.externalIncome, currency)} · Traslados {formatCurrency(row.transfers, currency)} · Gastos y ajustes {formatCurrency(row.expenses + row.adjustments, currency)} · Rendimiento registrado {formatCurrency(row.passiveReturn, currency)}
+                        Lo que registraste este mes suma {formatCurrency(row.explainedChange, currency)}: ingresos {formatCurrency(row.externalIncome, currency)} · traslados {formatCurrency(row.transfers, currency)} · gastos y correcciones {formatCurrency(row.expenses + row.adjustments, currency)} · rendimientos {formatCurrency(row.passiveReturn, currency)}
                     </p>
                 </div>
-                <div className="text-right">
-                    <p className="text-xs text-slate-500">Interés esperado {formatCurrency(expected, currency)}</p>
-                    <p className={pending ? 'font-semibold text-amber-700' : 'font-semibold text-emerald-700'}>{pending ? `Sin explicar ${formatCurrency(unexplained, currency)}` : 'Conciliado'}</p>
+                <div className="shrink-0 text-right">
+                    <p className={pending ? 'font-semibold text-amber-700' : 'font-semibold text-emerald-700'}>{pending ? `Falta explicar ${formatCurrency(unexplained, currency)}` : 'Cuadra con lo registrado'}</p>
+                    {pending && <p className="text-xs text-slate-500">cambio real − lo registrado</p>}
+                    {!market && <p className="text-xs text-slate-500">Interés esperado según tu tasa: {formatCurrency(expected, currency)}</p>}
                 </div>
             </div>
 
             {pending && market && (
                 <Question text="¿Este cambio fue por valorización o moviste dinero? Si fue un aporte o retiro desde otra cuenta tuya, regístralo como traslado.">
-                    <Button size="sm" disabled={locked} onClick={() => onClassify('PASSIVE_RETURN', 'UNREALIZED_VALUATION')}>{unexplained >= 0 ? 'Valorización no realizada' : 'Pérdida no realizada'}</Button>
-                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('PASSIVE_RETURN', 'REALIZED_GAIN')}>Resultado realizado</Button>
-                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('ADJUSTMENT')}>Ajuste explicado</Button>
+                    <Button size="sm" disabled={locked} onClick={() => onClassify('PASSIVE_RETURN', 'UNREALIZED_VALUATION')}>{unexplained >= 0 ? 'Subió de valor (sin vender)' : 'Bajó de valor (sin vender)'}</Button>
+                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('PASSIVE_RETURN', 'REALIZED_GAIN')}>Gané o perdí al vender</Button>
+                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('ADJUSTMENT')} title="No cuenta como ingreso, gasto ni rendimiento">Corrección u otro motivo</Button>
                 </Question>
             )}
 
@@ -223,9 +228,9 @@ function AccountRow({ row, locked, nextPeriodId, interestValue, onInterestChange
                 <Question text={expected > 0
                     ? `¿Son los intereses del mes? La diferencia está en línea con lo esperado (${formatCurrency(expected, currency)}).`
                     : `¿Son los intereses del mes? No hay tasa planificada; la diferencia equivale al ${percent(unexplained / row.openingBalance)} del saldo inicial.`}>
-                    <Button size="sm" disabled={locked} onClick={() => onClassify('PASSIVE_RETURN', 'INTEREST')}>Sí, son intereses</Button>
-                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('INCOME')}>Fue un ingreso externo</Button>
-                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('ADJUSTMENT')}>Ajuste explicado</Button>
+                    <Button size="sm" disabled={locked} onClick={() => onClassify('PASSIVE_RETURN', 'INTEREST')}>Sí, son intereses del banco</Button>
+                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('INCOME')}>Fue un ingreso (pago, salario…)</Button>
+                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('ADJUSTMENT')} title="No cuenta como ingreso, gasto ni rendimiento">Corrección u otro motivo</Button>
                 </Question>
             )}
 
@@ -235,8 +240,8 @@ function AccountRow({ row, locked, nextPeriodId, interestValue, onInterestChange
                     <div className="flex flex-wrap items-center gap-2">
                         <Input className="h-9 w-44" type="number" min="0" step="any" disabled={locked} placeholder="Intereses del extracto" value={interestValue ?? String(roundMoney(Math.max(0, expected), currency))} onChange={event => onInterestChange(event.target.value)} aria-label="Intereses según el extracto" />
                         <Button size="sm" disabled={locked} onClick={onStatedInterest}>Registrar intereses</Button>
-                        <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('INCOME')}>Todo es ingreso externo</Button>
-                        <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('ADJUSTMENT')}>Ajuste explicado</Button>
+                        <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('INCOME')}>Todo fue un ingreso (pago, salario…)</Button>
+                        <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('ADJUSTMENT')} title="No cuenta como ingreso, gasto ni rendimiento">Corrección u otro motivo</Button>
                     </div>
                 </div>
             )}
@@ -244,7 +249,7 @@ function AccountRow({ row, locked, nextPeriodId, interestValue, onInterestChange
             {pending && !market && unexplained < 0 && (
                 <Question text="Salió dinero que no está registrado. Si fue a otra cuenta tuya, regístralo como traslado; si no, clasifícalo.">
                     <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('EXPENSE')}>Fue un gasto</Button>
-                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('ADJUSTMENT')}>Ajuste explicado</Button>
+                    <Button size="sm" variant="outline" disabled={locked} onClick={() => onClassify('ADJUSTMENT')} title="No cuenta como ingreso, gasto ni rendimiento">Corrección u otro motivo</Button>
                 </Question>
             )}
 
@@ -255,6 +260,28 @@ function AccountRow({ row, locked, nextPeriodId, interestValue, onInterestChange
                 </div>
             )}
         </div>
+    );
+}
+
+const GLOSSARY: Array<[string, string]> = [
+    ['Falta explicar', 'Cuánto cambió el saldo real que no está cubierto por lo que registraste. Es lo que el asistente te pregunta.'],
+    ['Intereses del banco', 'Lo que pagó la cuenta por tener el dinero ahí. Cuenta como rendimiento.'],
+    ['Ingreso', 'Dinero que llegó de afuera: salario, un pago, un regalo. Cuenta como ingreso del mes.'],
+    ['Gasto', 'Dinero que salió y no fue a otra cuenta tuya.'],
+    ['Traslado', 'Dinero que moviste entre tus propias cuentas. No es ingreso, gasto ni rendimiento.'],
+    ['Subió o bajó de valor', 'Cambio de precio de una inversión que aún no vendes. Suma al patrimonio, pero no es dinero cobrado.'],
+    ['Gané o perdí al vender', 'Ganancia o pérdida que ya se hizo efectiva al vender.'],
+    ['Corrección u otro motivo', 'Cuadra el saldo sin contarlo como ingreso, gasto ni rendimiento: redondeos, errores de registros anteriores o algo que no quieres clasificar.'],
+];
+
+function Glossary() {
+    return (
+        <details className="rounded-xl bg-slate-50 px-4 py-3 text-sm">
+            <summary className="cursor-pointer font-medium text-slate-700">¿Qué significa cada opción?</summary>
+            <dl className="mt-3 grid gap-x-6 gap-y-2 md:grid-cols-2">
+                {GLOSSARY.map(([term, meaning]) => <div key={term}><dt className="font-medium text-slate-800">{term}</dt><dd className="text-slate-600">{meaning}</dd></div>)}
+            </dl>
+        </details>
     );
 }
 

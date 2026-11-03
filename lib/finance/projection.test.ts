@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { projectTwelveMonths, type ProjectionInput } from './projection';
+import { averagePlannedRate, projectTwelveMonths, scenarioRate, type ProjectionInput } from './projection';
 
 const input: ProjectionInput = {
     fromPeriodId: '2026-10',
@@ -44,5 +44,21 @@ describe('projectTwelveMonths', () => {
         const [month] = projectTwelveMonths(input, base);
         expect(month.coverage).toBeCloseTo(month.interestAvailable / 346_290, 10);
         expect(month.realNetWorth).toBeLessThan(month.netWorth);
+    });
+});
+
+describe('rate simulation', () => {
+    it('replaces the rate of every unrestricted interest account, planned or not', () => {
+        const scenario = { ...base, interestRateOverride: 0.12 };
+        const months = projectTwelveMonths(input, scenario);
+        expect(months.reduce((sum, month) => sum + month.interestAvailable, 0)).toBeCloseTo(10_500_000 * 0.12, 0);
+        expect(months.reduce((sum, month) => sum + month.interestRestricted, 0)).toBeCloseTo(400_000, 0);
+        expect(scenarioRate(input.accounts[1], scenario)).toBe(0.05);
+        expect(scenarioRate(input.accounts[2], { ...scenario, marketReturn: 0.09 })).toBe(0.09);
+    });
+
+    it('averages planned rates by balance, leaving out restricted and unplanned accounts', () => {
+        expect(averagePlannedRate(input.accounts)).toBeCloseTo(0.1, 10);
+        expect(averagePlannedRate(input.accounts.slice(2))).toBeNull();
     });
 });
