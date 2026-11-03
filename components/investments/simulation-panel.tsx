@@ -6,6 +6,7 @@ import { es } from 'date-fns/locale';
 import { averagePlannedRate, projectTwelveMonths, scenarioRate, type ProjectionInput, type Scenario } from '@/lib/finance/projection';
 import { ratePct } from '@/components/investments/projection-panel';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatCurrency } from '@/lib/utils';
@@ -23,9 +24,13 @@ export function SimulationPanel({ input, defaultMarketReturn }: { input: Project
     const [savingsRate, setSavingsRate] = useState(toInput(averagePlannedRate(input.accounts) ?? 0.1));
     const [marketRate, setMarketRate] = useState(toInput(defaultMarketReturn || 0.1));
     const [includeFlows, setIncludeFlows] = useState(true);
+    /** Rates typed for single accounts; a blank one follows the general rate of its kind. */
+    const [custom, setCustom] = useState<Record<string, string>>({});
+    const accountRates = useMemo(() => Object.fromEntries(Object.entries(custom).filter(([, raw]) => raw.trim() !== '').map(([id, raw]) => [id, toFraction(raw)])), [custom]);
 
     const planScenario: Scenario = useMemo(() => ({ rateShiftPoints: 0, marketReturn: defaultMarketReturn, includePlannedFlows: includeFlows }), [defaultMarketReturn, includeFlows]);
-    const simScenario: Scenario = useMemo(() => ({ ...planScenario, marketReturn: toFraction(marketRate), interestRateOverride: toFraction(savingsRate) }), [planScenario, marketRate, savingsRate]);
+    const simScenario: Scenario = useMemo(() => ({ ...planScenario, marketReturn: toFraction(marketRate), interestRateOverride: toFraction(savingsRate), accountRates }), [planScenario, marketRate, savingsRate, accountRates]);
+    const generalScenario: Scenario = useMemo(() => ({ ...simScenario, accountRates: undefined }), [simScenario]);
     const plan = useMemo(() => projectTwelveMonths(input, planScenario), [input, planScenario]);
     const sim = useMemo(() => projectTwelveMonths(input, simScenario), [input, simScenario]);
 
@@ -41,15 +46,16 @@ export function SimulationPanel({ input, defaultMarketReturn }: { input: Project
         const simRate = scenarioRate(account, simScenario);
         const planRate = scenarioRate(account, planScenario);
         const gain = account.balance * (simRate ?? 0);
-        return { account, simRate, planRate, gain, difference: gain - account.balance * (planRate ?? 0) };
+        return { account, simRate, planRate, generalRate: scenarioRate(account, generalScenario), gain, difference: gain - account.balance * (planRate ?? 0) };
     }).sort((a, b) => b.account.balance - a.account.balance);
+    const customCount = Object.keys(accountRates).length;
 
     return (
         <div className="space-y-4">
             <Card>
                 <CardHeader className="border-b">
                     <CardTitle>Simulación de tasas</CardTitle>
-                    <CardDescription>Prueba una tasa para todas tus cuentas de ahorro y otra para tus inversiones que cambian de valor, y compárala con tu plan actual. Parte de los saldos de {label(input.fromPeriodId)} y no guarda nada.</CardDescription>
+                    <CardDescription>Prueba una tasa para todas tus cuentas de ahorro y otra para tus inversiones que cambian de valor, y compárala con tu plan actual. Si quieres, ajusta la tasa de una cuenta en particular en la tabla. Parte de los saldos de {label(input.fromPeriodId)} y no guarda nada.</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-4 pt-4 md:grid-cols-3">
                     <label className="space-y-1 text-sm">
@@ -77,15 +83,32 @@ export function SimulationPanel({ input, defaultMarketReturn }: { input: Project
             </div>
 
             <Card>
+                <CardHeader className="flex flex-row items-center justify-between gap-3 border-b">
+                    <div>
+                        <CardTitle className="text-base">Por cuenta</CardTitle>
+                        <CardDescription>Escribe una tasa en una cuenta para usarla solo ahí; déjala vacía para que siga la tasa general.</CardDescription>
+                    </div>
+                    {customCount > 0 && <Button size="sm" variant="outline" onClick={() => setCustom({})}>Quitar ajustes ({customCount})</Button>}
+                </CardHeader>
                 <CardContent className="px-0 pt-2 sm:px-6">
                     <Table>
-                        <TableHeader><TableRow><TableHead>Cuenta</TableHead><TableHead className="text-right">Saldo</TableHead><TableHead className="text-right">Tasa del plan</TableHead><TableHead className="text-right">Tasa simulada</TableHead><TableHead className="text-right">Rendimiento en 12 meses</TableHead><TableHead className="text-right">Vs. plan</TableHead></TableRow></TableHeader>
-                        <TableBody>{rows.map(({ account, simRate, planRate, gain, difference }) => (
+                        <TableHeader><TableRow><TableHead>Cuenta</TableHead><TableHead className="text-right">Saldo</TableHead><TableHead className="text-right">Tasa del plan</TableHead><TableHead className="text-right">Tasa simulada (% E.A.)</TableHead><TableHead className="text-right">Rendimiento en 12 meses</TableHead><TableHead className="text-right">Vs. plan</TableHead></TableRow></TableHeader>
+                        <TableBody>{rows.map(({ account, simRate, planRate, generalRate, gain, difference }) => (
                             <TableRow key={account.id}>
                                 <TableCell className="font-medium">{account.name}<span className="ml-2 text-xs font-normal text-slate-500">{account.behavior === 'MARKET_VALUE' ? 'variable' : account.restricted ? 'restringida' : 'ahorro'}</span></TableCell>
                                 <TableCell className="text-right tabular-nums">{formatCurrency(account.balance)}</TableCell>
                                 <TableCell className="text-right tabular-nums text-slate-500">{planRate === null ? 'sin tasa' : ratePct(planRate)}</TableCell>
-                                <TableCell className="text-right tabular-nums">{simRate === null ? 'sin tasa' : ratePct(simRate)}</TableCell>
+                                <TableCell className="text-right">
+                                    <Input
+                                        className={custom[account.id]?.trim() ? 'ml-auto h-8 w-24 border-emerald-500 text-right tabular-nums' : 'ml-auto h-8 w-24 text-right tabular-nums'}
+                                        inputMode="decimal"
+                                        value={custom[account.id] ?? ''}
+                                        placeholder={generalRate === null ? 'sin tasa' : toInput(generalRate)}
+                                        onChange={event => setCustom(values => ({ ...values, [account.id]: event.target.value }))}
+                                        aria-label={`Tasa simulada de ${account.name}`}
+                                        title={simRate === null ? 'Sin tasa' : `Se usa ${ratePct(simRate)} E.A.`}
+                                    />
+                                </TableCell>
                                 <TableCell className="text-right tabular-nums">{formatCurrency(gain)}</TableCell>
                                 <TableCell className={difference > 0 ? 'text-right tabular-nums text-emerald-700' : difference < 0 ? 'text-right tabular-nums text-rose-700' : 'text-right tabular-nums text-slate-500'}>{signed(difference)}</TableCell>
                             </TableRow>

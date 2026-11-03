@@ -242,6 +242,10 @@ export interface FinancialEvent {
   returnKind?: ReturnKind; // Solo PASSIVE_RETURN; sin valor se infiere del perfil de la cuenta
   chargeKind?: CardChargeKind; // Cargos a tarjeta registrados desde Obligaciones
   plannedCashFlowId?: string;
+  /** Past income the balance already reflected: it does not move the account (see ledger.ts). */
+  keepsBalance?: boolean;
+  /** Set on the correction that offsets a kept-balance income; it lives and dies with that income. */
+  offsetForEventId?: string;
   obligationId?: string;
   installments?: number;
   effectiveExchangeRate?: number;

@@ -250,3 +250,58 @@ describe('kept-balance expenses', () => {
         expect((await db.financialEvents.get(saved!.financialEventId!))?.plannedCashFlowId).toBe('flow-1');
     });
 });
+
+describe('kept-balance incomes', () => {
+    const accountTotal = async () => (await db.accountEntries.where('accountId').equals('cop').toArray()).reduce((sum, entry) => sum + entry.amount, 0);
+    const incomeTotal = async () => {
+        const incomes = new Set((await db.financialEvents.where('type').equals('INCOME').toArray()).map(event => event.id));
+        return (await db.accountEntries.toArray()).filter(entry => incomes.has(entry.eventId)).reduce((sum, entry) => sum + entry.amount, 0);
+    };
+    const correction = (amount: number) => saveFinancialEvent(
+        { periodId: '2026-10', date: '2026-10-31', type: 'ADJUSTMENT', concept: 'Ajuste de conciliación' },
+        [{ accountId: 'cop', amount, currency: 'COP' }],
+    );
+    const pastIncome = (amount: number, id = 'bonus') => saveFinancialEvent(
+        { id, periodId: '2026-10', date: '2026-10-20', type: 'INCOME', concept: 'Bono', incomeKind: 'OTHER_INCOME', keepsBalance: true },
+        [{ accountId: 'cop', amount, currency: 'COP' }],
+    );
+
+    it('takes the place of a positive correction and still counts as income', async () => {
+        await correction(300_000);
+        await pastIncome(200_000);
+        expect(await accountTotal()).toBe(300_000);
+        expect(await incomeTotal()).toBe(200_000);
+        const [adjustment] = await db.financialEvents.where('type').equals('ADJUSTMENT').toArray();
+        expect((await db.accountEntries.where('eventId').equals(adjustment.id).first())?.amount).toBe(100_000);
+    });
+
+    it('balances what it cannot take with a linked correction that cannot be deleted alone', async () => {
+        await correction(50_000);
+        await pastIncome(200_000);
+        expect(await accountTotal()).toBe(50_000);
+        expect(await incomeTotal()).toBe(200_000);
+        const offset = (await db.financialEvents.where('type').equals('ADJUSTMENT').toArray()).find(event => event.offsetForEventId === 'bonus');
+        expect((await db.accountEntries.where('eventId').equals(offset!.id).first())?.amount).toBe(-150_000);
+        await expect(deleteFinancialEvent(offset!.id)).rejects.toBeInstanceOf(LedgerError);
+    });
+
+    it('gives everything back when edited or deleted, and an expense never takes its offset', async () => {
+        await correction(50_000);
+        await pastIncome(200_000);
+        await pastIncome(80_000);
+        expect(await accountTotal()).toBe(50_000);
+        expect(await incomeTotal()).toBe(80_000);
+        await saveExpenseWithLedger(expense({ keepsBalance: true, paymentAccountId: 'cop' }), { kind: 'ACCOUNT', accountId: 'cop' });
+        expect(await accountTotal()).toBe(50_000);
+        await deleteFinancialEvent('bonus');
+        expect(await accountTotal()).toBe(50_000);
+        expect(await db.financialEvents.filter(event => Boolean(event.offsetForEventId)).count()).toBe(0);
+    });
+
+    it('is only possible for an income into one account', async () => {
+        await expect(saveFinancialEvent(
+            { periodId: '2026-10', date: '2026-10-20', type: 'TRANSFER', concept: 'x', keepsBalance: true },
+            [{ accountId: 'cop', amount: -10, currency: 'COP' }, { accountId: 'pocket', amount: 10, currency: 'COP' }],
+        )).rejects.toBeInstanceOf(LedgerError);
+    });
+});

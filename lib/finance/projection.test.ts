@@ -57,6 +57,16 @@ describe('rate simulation', () => {
         expect(scenarioRate(input.accounts[2], { ...scenario, marketReturn: 0.09 })).toBe(0.09);
     });
 
+    it('lets a single account use its own rate, restricted and market accounts included', () => {
+        const scenario = { ...base, interestRateOverride: 0.12, marketReturn: 0.08, accountRates: { fna: 0.04, tyba: -0.05, cash: 0.02 } };
+        expect(scenarioRate(input.accounts[0], scenario)).toBe(0.12);
+        expect(scenarioRate(input.accounts[1], scenario)).toBe(0.04);
+        expect(scenarioRate(input.accounts[2], scenario)).toBe(-0.05);
+        const months = projectTwelveMonths(input, scenario);
+        expect(months.reduce((sum, month) => sum + month.interestAvailable, 0)).toBeCloseTo(10_000_000 * 0.12 + 500_000 * 0.02, 0);
+        expect(months.reduce((sum, month) => sum + month.marketGain, 0)).toBeCloseTo(-38_000_000 * 0.05, 0);
+    });
+
     it('averages planned rates by balance, leaving out restricted and unplanned accounts', () => {
         expect(averagePlannedRate(input.accounts)).toBeCloseTo(0.1, 10);
         expect(averagePlannedRate(input.accounts.slice(2))).toBeNull();

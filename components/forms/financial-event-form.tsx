@@ -10,6 +10,7 @@ import { defaultReturnKind, RETURN_KIND_LABELS, RETURN_KINDS, SIGNED_RETURN_KIND
 import type { FinancialEventType, ReturnKind } from '@/lib/types';
 import { useActivePeriod } from '@/lib/hooks/use-active-period';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -32,6 +33,7 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
     const [message, setMessage] = useState<{ tone: 'error' | 'success'; text: string } | null>(null);
     const [chosenReturnKind, setChosenReturnKind] = useState<ReturnKind | null>(null);
     const [isLoss, setIsLoss] = useState(false);
+    const [keepsBalance, setKeepsBalance] = useState(false);
     const source = useMemo(() => accounts.find(item => item.id === accountId), [accounts, accountId]);
     const returnKind = chosenReturnKind ?? defaultReturnKind(source);
     const canBeLoss = SIGNED_RETURN_KINDS.includes(returnKind);
@@ -45,6 +47,8 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
             return;
         }
         const parsed = Number(amount);
+        // Like expenses, the period follows the chosen date, so a past income lands in its own month.
+        const targetPeriodId = date.slice(0, 7);
         if (!source || !Number.isFinite(parsed) || parsed <= 0 || !concept.trim()) {
             setMessage({ tone: 'error', text: 'Completa la cuenta, el concepto y un monto mayor que cero.' });
             return;
@@ -62,7 +66,7 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
                     return;
                 }
                 await saveFinancialEvent({
-                    id: uuidv4(), periodId, date, type, concept: concept.trim(),
+                    id: uuidv4(), periodId: targetPeriodId, date, type, concept: concept.trim(),
                 }, [
                     { accountId: source.id, amount: -parsed, currency: source.currency },
                     { accountId: destination.id, amount: received, currency: destination.currency },
@@ -70,16 +74,18 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
             } else {
                 const signed = type === 'PASSIVE_RETURN' && canBeLoss && isLoss ? -parsed : parsed;
                 await saveFinancialEvent({
-                    id: uuidv4(), periodId, date, type, concept: concept.trim(),
+                    id: uuidv4(), periodId: targetPeriodId, date, type, concept: concept.trim(),
                     incomeKind: type === 'INCOME' ? incomeKind : undefined,
                     returnKind: type === 'PASSIVE_RETURN' ? returnKind : undefined,
+                    keepsBalance: type === 'INCOME' && keepsBalance,
                 }, [{ accountId: source.id, amount: signed, currency: source.currency }]);
             }
             setAmount('');
             setDestinationAmount('');
             setIsLoss(false);
             setConcept(type === 'INCOME' ? 'Ingreso' : '');
-            setMessage({ tone: 'success', text: 'Movimiento registrado y enlazado correctamente.' });
+            setMessage({ tone: 'success', text: type === 'INCOME' && keepsBalance ? 'Ingreso registrado sin modificar el saldo de la cuenta.' : 'Movimiento registrado y enlazado correctamente.' });
+            setKeepsBalance(false);
             onSuccess?.();
         } catch (error) {
             setMessage({ tone: 'error', text: error instanceof Error ? error.message : 'No fue posible guardar el movimiento.' });
@@ -141,6 +147,15 @@ export function FinancialEventForm({ defaultType = 'INCOME', onSuccess }: { defa
                 {type === 'TRANSFER' && <div className="space-y-1.5"><Label>Monto recibido ({destination?.currency ?? ''})</Label><Input type="number" min="0" step="any" value={destinationAmount} onChange={event => setDestinationAmount(event.target.value)} placeholder={source?.currency === destination?.currency ? amount : ''} /></div>}
             </div>
             <div className="space-y-1.5"><Label>Concepto</Label><Input value={concept} onChange={event => setConcept(event.target.value)} placeholder="Ej. Salario, aporte a inversión, intereses" /></div>
+            {type === 'INCOME' && (
+                <label className="flex items-start gap-3 rounded-md border p-3 text-sm">
+                    <Checkbox className="mt-0.5" checked={keepsBalance} onCheckedChange={value => setKeepsBalance(Boolean(value))} />
+                    <span className="space-y-1">
+                        <span className="block font-medium">Ingreso pasado: no modificar el saldo</span>
+                        <span className="block text-xs text-slate-500">Para un ingreso que ya estaba reflejado en el saldo, por ejemplo uno que en el cierre quedó como corrección. Cuenta como ingreso de ese mes, pero no mueve la cuenta: si ese mes hay una corrección de la misma cuenta, el ingreso toma su lugar. Usa la fecha real del ingreso; si el mes está cerrado, reábrelo primero.</span>
+                    </span>
+                </label>
+            )}
             {type === 'TRANSFER' && source && destination && source.currency !== destination.currency && Number(amount) > 0 && Number(destinationAmount) > 0 && (
                 <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-800">Tasa efectiva: {(Number(destinationAmount) / Number(amount)).toLocaleString('es-CO', { maximumFractionDigits: 6 })} {destination.currency}/{source.currency}</p>
             )}

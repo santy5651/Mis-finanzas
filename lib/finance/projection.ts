@@ -32,6 +32,8 @@ export interface Scenario {
     includePlannedFlows: boolean;
     /** Simulated annual rate that replaces the plan of every unrestricted interest account, planned or not. */
     interestRateOverride?: number | null;
+    /** Annual rate chosen for a single account, by id; it wins over every other rule. */
+    accountRates?: Record<string, number>;
 }
 
 export interface ProjectionMonth {
@@ -54,6 +56,8 @@ const monthlyFromAnnual = (annual: number) => Math.pow(1 + annual, 1 / 12) - 1;
  * Monthly compounding of this rate gives exactly balance × rate over twelve months.
  */
 export function scenarioRate(account: ProjectionAccount, scenario: Scenario): number | null {
+    const custom = scenario.accountRates?.[account.id];
+    if (custom !== undefined) return account.behavior === 'MARKET_VALUE' ? custom : Math.max(0, custom);
     if (account.behavior === 'MARKET_VALUE') return scenario.marketReturn;
     const override = scenario.interestRateOverride;
     const base = override !== undefined && override !== null && !account.restricted ? override : account.annualRate;

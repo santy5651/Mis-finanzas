@@ -25,6 +25,8 @@ type EventInput = {
     returnKind?: ReturnKind;
     chargeKind?: CardChargeKind;
     plannedCashFlowId?: string;
+    /** Only for a single-account INCOME: the money was already in the balance. */
+    keepsBalance?: boolean;
 };
 
 type AccountDelta = { accountId: string; amount: number; currency: Currency };
@@ -89,9 +91,12 @@ export async function saveFinancialEvent(
         returnKind: input.type === 'PASSIVE_RETURN' ? input.returnKind : undefined,
         chargeKind: input.chargeKind,
         plannedCashFlowId: input.plannedCashFlowId,
+        keepsBalance: input.keepsBalance || undefined,
         createdAt: now,
         updatedAt: now,
     };
+    const keptIncome = input.keepsBalance && input.type === 'INCOME' && accountDeltas.length === 1 && accountDeltas[0].amount > 0 && obligationDeltas.length === 0;
+    if (input.keepsBalance && !keptIncome) throw new LedgerError('Solo un ingreso a una cuenta puede registrarse sin modificar el saldo.');
     if (input.type === 'TRANSFER' && accountDeltas.length === 2) {
         const outgoing = accountDeltas.find(item => item.amount < 0);
         const incoming = accountDeltas.find(item => item.amount > 0);
@@ -124,41 +129,80 @@ export async function saveFinancialEvent(
         await assertDeltaCurrencies(accountDeltas, obligationDeltas);
         const existing = await db.financialEvents.get(eventId);
         if (existing && existing.periodId !== input.periodId) await assertPeriodOpen(existing.periodId);
+        if (existing?.offsetForEventId) throw new LedgerError('Esta contrapartida se modifica junto con su ingreso.');
         if (existing) event.createdAt = existing.createdAt;
+        if (existing?.keepsBalance) await releaseKeptIncome(existing);
         await db.accountEntries.where('eventId').equals(eventId).delete();
         await db.obligationEntries.where('eventId').equals(eventId).delete();
         await db.financialEvents.put(event);
         if (accountEntries.length) await db.accountEntries.bulkAdd(accountEntries);
         if (obligationEntries.length) await db.obligationEntries.bulkAdd(obligationEntries);
+        if (keptIncome) await offsetKeptIncome(event, accountEntries[0]);
     });
     return eventId;
+}
+
+/**
+ * A kept-balance income still counts as income, so it keeps its entry and is balanced instead: first by
+ * taking the place of a correction or "Ingreso conciliado" the close left on that account, then, for any
+ * rest, by a linked correction. Must run inside the ledger transaction.
+ */
+async function offsetKeptIncome(event: FinancialEvent, entry: AccountEntry): Promise<void> {
+    const absorbed = await absorbReconciliation(entry.accountId, entry.periodId, entry.amount, event.id, 'IN');
+    const rest = toCents(entry.amount - absorbed);
+    if (rest <= 0) return;
+    const offsetId = uuidv4();
+    await db.financialEvents.add({ id: offsetId, periodId: event.periodId, date: event.date, type: 'ADJUSTMENT', concept: `Contrapartida: ${event.concept} ya estaba en el saldo`, offsetForEventId: event.id, createdAt: event.createdAt, updatedAt: event.updatedAt });
+    await db.accountEntries.add({ ...entry, id: uuidv4(), eventId: offsetId, amount: -rest });
+}
+
+/** Undoes offsetKeptIncome: removes the linked correction and gives back what was taken from the close. */
+async function releaseKeptIncome(event: FinancialEvent): Promise<void> {
+    const [entry] = await db.accountEntries.where('eventId').equals(event.id).toArray();
+    const offsets = await db.financialEvents.filter(item => item.offsetForEventId === event.id).toArray();
+    let rest = 0;
+    for (const offset of offsets) {
+        const offsetEntries = await db.accountEntries.where('eventId').equals(offset.id).toArray();
+        rest += offsetEntries.reduce((sum, item) => sum - item.amount, 0);
+        await db.accountEntries.where('eventId').equals(offset.id).delete();
+        await db.financialEvents.delete(offset.id);
+    }
+    if (!entry) return;
+    const absorbed = toCents(entry.amount - rest);
+    if (absorbed > 0) await restoreReconciliation([{ ...entry, amount: absorbed }], event.date);
 }
 
 const RECONCILIATION_ADJUSTMENT = 'Ajuste de conciliación';
 
 /**
- * Takes up to `amount` from what the close used to explain money that left the account in the period:
- * corrections (ADJUSTMENT) and "Gasto conciliado". An exact match goes first, then the largest.
- * Returns how much was taken. Must run inside a transaction with the event and entry tables.
+ * Takes up to `amount` from what the close used to explain money in the period: corrections (ADJUSTMENT)
+ * plus "Gasto conciliado" for money that left (OUT) or "Ingreso conciliado" for money that arrived (IN).
+ * An exact match goes first, then the largest. Returns how much was taken. Must run inside a transaction
+ * with the event and entry tables.
  */
-async function absorbReconciliation(accountId: string, periodId: string, amount: number, eventId: string): Promise<number> {
-    const outflows = await db.accountEntries.where('[periodId+accountId]').equals([periodId, accountId]).filter(entry => entry.amount < 0 && entry.eventId !== eventId).toArray();
+async function absorbReconciliation(accountId: string, periodId: string, amount: number, eventId: string, direction: 'IN' | 'OUT' = 'OUT'): Promise<number> {
+    const sign = direction === 'IN' ? 1 : -1;
+    const candidates = await db.accountEntries.where('[periodId+accountId]').equals([periodId, accountId]).filter(entry => sign * entry.amount > 0 && entry.eventId !== eventId).toArray();
     const usable: AccountEntry[] = [];
-    for (const entry of outflows) {
+    for (const entry of candidates) {
         const event = await db.financialEvents.get(entry.eventId);
-        const absorbable = event?.type === 'ADJUSTMENT' || (event?.type === 'EXPENSE' && !event.expenseId && event.concept === 'Gasto conciliado');
+        if (!event || event.offsetForEventId) continue;
+        const absorbable = event.type === 'ADJUSTMENT'
+            || (direction === 'OUT' && event.type === 'EXPENSE' && !event.expenseId && event.concept === 'Gasto conciliado')
+            || (direction === 'IN' && event.type === 'INCOME' && !event.incomeId && !event.plannedCashFlowId && event.concept === 'Ingreso conciliado');
         if (!absorbable) continue;
         const [siblings, obligationCount] = await Promise.all([db.accountEntries.where('eventId').equals(entry.eventId).count(), db.obligationEntries.where('eventId').equals(entry.eventId).count()]);
         if (siblings === 1 && obligationCount === 0) usable.push(entry);
     }
-    const exact = (entry: AccountEntry) => Number(toCents(-entry.amount) === toCents(amount));
-    usable.sort((a, b) => exact(b) - exact(a) || a.amount - b.amount);
+    const size = (entry: AccountEntry) => sign * entry.amount;
+    const exact = (entry: AccountEntry) => Number(toCents(size(entry)) === toCents(amount));
+    usable.sort((a, b) => exact(b) - exact(a) || size(b) - size(a));
     let remaining = toCents(amount);
     for (const entry of usable) {
         if (remaining <= 0) break;
-        const take = Math.min(remaining, -entry.amount);
+        const take = Math.min(remaining, size(entry));
         remaining = toCents(remaining - take);
-        const left = toCents(entry.amount + take);
+        const left = toCents(entry.amount - sign * take);
         if (left === 0) {
             await db.accountEntries.delete(entry.id);
             await db.financialEvents.delete(entry.eventId);
@@ -263,6 +307,8 @@ export async function deleteFinancialEvent(eventId: string): Promise<void> {
     await db.transaction('rw', [db.periods, db.financialEvents, db.accountEntries, db.obligationEntries, db.expenses, db.incomes], async () => {
         const event = await db.financialEvents.get(eventId);
         if (event) await assertPeriodOpen(event.periodId);
+        if (event?.offsetForEventId) throw new LedgerError('Esta contrapartida se borra junto con su ingreso.');
+        if (event?.keepsBalance) await releaseKeptIncome(event);
         const expense = event?.expenseId ? await db.expenses.get(event.expenseId) : undefined;
         if (expense?.keepsBalance) await restoreReconciliation(await db.accountEntries.where('eventId').equals(eventId).toArray(), expense.date);
         await db.accountEntries.where('eventId').equals(eventId).delete();
@@ -296,7 +342,7 @@ export async function pairEventsAsTransfer(outgoingEventId: string, incomingEven
             const event = await db.financialEvents.get(id);
             const entries = await db.accountEntries.where('eventId').equals(id).toArray();
             const obligationCount = await db.obligationEntries.where('eventId').equals(id).count();
-            if (!event || !PAIRABLE_TYPES.includes(event.type) || event.expenseId || event.incomeId || entries.length !== 1 || obligationCount) {
+            if (!event || !PAIRABLE_TYPES.includes(event.type) || event.expenseId || event.incomeId || event.offsetForEventId || event.keepsBalance || entries.length !== 1 || obligationCount) {
                 throw new LedgerError('Solo se pueden emparejar movimientos de una sola cuenta sin gasto o ingreso vinculado.');
             }
             return { event, entry: entries[0] };
