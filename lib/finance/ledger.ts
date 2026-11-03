@@ -134,10 +134,61 @@ export async function saveFinancialEvent(
     return eventId;
 }
 
+const RECONCILIATION_ADJUSTMENT = 'Ajuste de conciliación';
+
+/**
+ * Takes up to `amount` from what the close used to explain money that left the account in the period:
+ * corrections (ADJUSTMENT) and "Gasto conciliado". An exact match goes first, then the largest.
+ * Returns how much was taken. Must run inside a transaction with the event and entry tables.
+ */
+async function absorbReconciliation(accountId: string, periodId: string, amount: number, eventId: string): Promise<number> {
+    const outflows = await db.accountEntries.where('[periodId+accountId]').equals([periodId, accountId]).filter(entry => entry.amount < 0 && entry.eventId !== eventId).toArray();
+    const usable: AccountEntry[] = [];
+    for (const entry of outflows) {
+        const event = await db.financialEvents.get(entry.eventId);
+        const absorbable = event?.type === 'ADJUSTMENT' || (event?.type === 'EXPENSE' && !event.expenseId && event.concept === 'Gasto conciliado');
+        if (!absorbable) continue;
+        const [siblings, obligationCount] = await Promise.all([db.accountEntries.where('eventId').equals(entry.eventId).count(), db.obligationEntries.where('eventId').equals(entry.eventId).count()]);
+        if (siblings === 1 && obligationCount === 0) usable.push(entry);
+    }
+    const exact = (entry: AccountEntry) => Number(toCents(-entry.amount) === toCents(amount));
+    usable.sort((a, b) => exact(b) - exact(a) || a.amount - b.amount);
+    let remaining = toCents(amount);
+    for (const entry of usable) {
+        if (remaining <= 0) break;
+        const take = Math.min(remaining, -entry.amount);
+        remaining = toCents(remaining - take);
+        const left = toCents(entry.amount + take);
+        if (left === 0) {
+            await db.accountEntries.delete(entry.id);
+            await db.financialEvents.delete(entry.eventId);
+        } else {
+            await db.accountEntries.update(entry.id, { amount: left });
+        }
+    }
+    return toCents(amount - remaining);
+}
+
+/** Gives back what a kept-balance expense had taken, as a correction, so the reconciliation does not move. */
+async function restoreReconciliation(entries: AccountEntry[], date: string): Promise<void> {
+    const now = new Date().toISOString();
+    for (const entry of entries) {
+        const eventId = uuidv4();
+        await db.financialEvents.add({ id: eventId, periodId: entry.periodId, date, type: 'ADJUSTMENT', concept: RECONCILIATION_ADJUSTMENT, createdAt: now, updatedAt: now });
+        await db.accountEntries.add({ ...entry, id: uuidv4(), eventId, createdAt: now });
+    }
+}
+
+/**
+ * Saves an expense with its event and entries. A `keepsBalance` expense (a past expense the balance already
+ * reflects) does not move the account: it takes the place of a matching correction from the close, or has no
+ * entries at all. Returns how much it took from the close.
+ */
 export async function saveExpenseWithLedger(
     expense: Expense,
     payment: { kind: 'ACCOUNT'; accountId: string } | { kind: 'CREDIT_CARD'; obligationId: string },
-): Promise<void> {
+    options: { plannedCashFlowId?: string } = {},
+): Promise<{ absorbed: number }> {
     assertDateInPeriod(expense.date, expense.periodId);
     const account = payment.kind === 'ACCOUNT' ? await db.accounts.get(payment.accountId) : undefined;
     const obligation = payment.kind === 'CREDIT_CARD' ? await db.obligations.get(payment.obligationId) : undefined;
@@ -174,27 +225,37 @@ export async function saveExpenseWithLedger(
         createdAt: now,
         updatedAt: now,
     };
-    const accountEntries: AccountEntry[] = payment.kind === 'ACCOUNT' ? [{
+    let accountEntries: AccountEntry[] = payment.kind === 'ACCOUNT' ? [{
         id: uuidv4(), eventId, periodId: expense.periodId, accountId: payment.accountId,
         amount: -expense.amount, currency: expense.currency, createdAt: now,
     }] : [];
-    const obligationEntries: ObligationEntry[] = payment.kind === 'CREDIT_CARD' ? [{
+    const obligationEntries: ObligationEntry[] = payment.kind === 'CREDIT_CARD' && !expense.keepsBalance ? [{
         id: uuidv4(), eventId, periodId: expense.periodId, obligationId: payment.obligationId,
         amount: expense.amount, currency: expense.currency, createdAt: now,
     }] : [];
 
-    await db.transaction('rw', [db.periods, db.expenses, db.financialEvents, db.accountEntries, db.obligationEntries], async () => {
+    return db.transaction('rw', [db.periods, db.expenses, db.financialEvents, db.accountEntries, db.obligationEntries], async () => {
         await assertPeriodOpen(expense.periodId);
         const previousExpense = await db.expenses.get(expense.id);
         if (previousExpense && previousExpense.periodId !== expense.periodId) await assertPeriodOpen(previousExpense.periodId);
         const existingEvent = await db.financialEvents.get(eventId);
         if (existingEvent) event.createdAt = existingEvent.createdAt;
+        event.plannedCashFlowId = options.plannedCashFlowId ?? existingEvent?.plannedCashFlowId;
+        const previousEntries = await db.accountEntries.where('eventId').equals(eventId).toArray();
         await db.accountEntries.where('eventId').equals(eventId).delete();
         await db.obligationEntries.where('eventId').equals(eventId).delete();
+        // Restore first and absorb again: an unchanged edit nets out to the same entries.
+        if (previousExpense?.keepsBalance) await restoreReconciliation(previousEntries, previousExpense.date);
+        let absorbed = 0;
+        if (expense.keepsBalance && payment.kind === 'ACCOUNT') {
+            absorbed = await absorbReconciliation(payment.accountId, expense.periodId, expense.amount, eventId);
+            accountEntries = absorbed > 0 ? [{ ...accountEntries[0], amount: -absorbed }] : [];
+        }
         await db.expenses.put(nextExpense);
         await db.financialEvents.put(event);
         if (accountEntries.length) await db.accountEntries.bulkAdd(accountEntries);
         if (obligationEntries.length) await db.obligationEntries.bulkAdd(obligationEntries);
+        return { absorbed };
     });
 }
 
@@ -202,6 +263,8 @@ export async function deleteFinancialEvent(eventId: string): Promise<void> {
     await db.transaction('rw', [db.periods, db.financialEvents, db.accountEntries, db.obligationEntries, db.expenses, db.incomes], async () => {
         const event = await db.financialEvents.get(eventId);
         if (event) await assertPeriodOpen(event.periodId);
+        const expense = event?.expenseId ? await db.expenses.get(event.expenseId) : undefined;
+        if (expense?.keepsBalance) await restoreReconciliation(await db.accountEntries.where('eventId').equals(eventId).toArray(), expense.date);
         await db.accountEntries.where('eventId').equals(eventId).delete();
         await db.obligationEntries.where('eventId').equals(eventId).delete();
         if (event?.expenseId) await db.expenses.delete(event.expenseId);

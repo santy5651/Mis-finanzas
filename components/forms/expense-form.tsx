@@ -50,6 +50,7 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
             category: defaultValues?.category ?? (defaultValues?.reason ? resolveCategory({ reason: defaultValues.reason }) : undefined),
             entityId: defaultValues?.entityId ?? undefined,
             isRecurring: defaultValues?.isRecurring ?? false,
+            keepsBalance: defaultValues?.keepsBalance ?? false,
             notes: defaultValues?.notes ?? undefined,
             paymentAccountId: defaultValues?.paymentAccountId ?? undefined,
             obligationId: defaultValues?.obligationId ?? undefined,
@@ -95,7 +96,8 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                 reason: '',
                 method: 'DEBIT',
                 installments: 1,
-                isRecurring: false
+                isRecurring: false,
+                keepsBalance: false,
             });
             onSuccess?.();
         } catch (error) {
@@ -307,6 +309,29 @@ export function ExpenseForm({ onSuccess, defaultValues }: ExpenseFormProps) {
                                 <FormLabel>
                                     Gasto mensual persistente
                                 </FormLabel>
+                            </div>
+                        </FormItem>
+                    )}
+                />
+
+                <FormField
+                    control={form.control}
+                    name="keepsBalance"
+                    render={({ field }) => (
+                        <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
+                            <FormControl>
+                                <Checkbox
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                />
+                            </FormControl>
+                            <div className="space-y-1 leading-none">
+                                <FormLabel>
+                                    Gasto pasado: no modificar el saldo
+                                </FormLabel>
+                                <p className="text-xs text-muted-foreground">
+                                    Para un gasto que ya estaba reflejado en el saldo, por ejemplo uno que en el cierre quedó como corrección. Cuenta como gasto en su categoría, pero no mueve la cuenta: si ese mes hay una corrección de la misma cuenta, el gasto toma su lugar. Usa la fecha real del gasto; si el mes está cerrado, reábrelo primero.
+                                </p>
                             </div>
                         </FormItem>
                     )}

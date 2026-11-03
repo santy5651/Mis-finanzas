@@ -204,3 +204,49 @@ describe('copyRecurringPlan', () => {
         await expect(copyRecurringPlan('2026-11', '2026-10')).rejects.toBeInstanceOf(LedgerError);
     });
 });
+
+describe('kept-balance expenses', () => {
+    const accountTotal = async () => (await db.accountEntries.where('accountId').equals('cop').toArray()).reduce((sum, entry) => sum + entry.amount, 0);
+    const correction = (amount: number) => saveFinancialEvent(
+        { periodId: '2026-10', date: '2026-10-31', type: 'ADJUSTMENT', concept: 'Ajuste de conciliación' },
+        [{ accountId: 'cop', amount: -amount, currency: 'COP' }],
+    );
+    const past = (overrides: Partial<Expense> = {}) => expense({ keepsBalance: true, paymentAccountId: 'cop', ...overrides });
+
+    it('takes the place of the correction the close used, without moving the account', async () => {
+        await correction(80_000);
+        const { absorbed } = await saveExpenseWithLedger(past(), { kind: 'ACCOUNT', accountId: 'cop' });
+        expect(absorbed).toBe(50_000);
+        expect(await accountTotal()).toBe(-80_000);
+        const adjustments = await db.financialEvents.where('type').equals('ADJUSTMENT').toArray();
+        expect(adjustments).toHaveLength(1);
+        expect((await db.accountEntries.where('eventId').equals(adjustments[0].id).first())?.amount).toBe(-30_000);
+    });
+
+    it('removes a correction it covers exactly, and has no entries when there is nothing to take', async () => {
+        await correction(50_000);
+        await saveExpenseWithLedger(past(), { kind: 'ACCOUNT', accountId: 'cop' });
+        expect(await db.financialEvents.where('type').equals('ADJUSTMENT').count()).toBe(0);
+        await saveExpenseWithLedger(past({ id: 'exp-2', reason: 'Otro' }), { kind: 'ACCOUNT', accountId: 'cop' });
+        const second = await db.expenses.get('exp-2');
+        expect(await db.accountEntries.where('eventId').equals(second!.financialEventId!).count()).toBe(0);
+        expect(await accountTotal()).toBe(-50_000);
+    });
+
+    it('gives the correction back when edited down or deleted', async () => {
+        await correction(50_000);
+        await saveExpenseWithLedger(past(), { kind: 'ACCOUNT', accountId: 'cop' });
+        await saveExpenseWithLedger({ ...(await db.expenses.get('exp-1'))!, amount: 20_000 }, { kind: 'ACCOUNT', accountId: 'cop' });
+        expect(await accountTotal()).toBe(-50_000);
+        await deleteExpenseWithLedger((await db.expenses.get('exp-1'))!);
+        expect(await accountTotal()).toBe(-50_000);
+        expect(await db.expenses.count()).toBe(0);
+    });
+
+    it('links a payment to the planned expense it fulfils and keeps the link on edit', async () => {
+        await saveExpenseWithLedger(expense(), { kind: 'ACCOUNT', accountId: 'cop' }, { plannedCashFlowId: 'flow-1' });
+        await saveExpenseWithLedger({ ...(await db.expenses.get('exp-1'))!, amount: 60_000 }, { kind: 'ACCOUNT', accountId: 'cop' });
+        const saved = await db.expenses.get('exp-1');
+        expect((await db.financialEvents.get(saved!.financialEventId!))?.plannedCashFlowId).toBe('flow-1');
+    });
+});

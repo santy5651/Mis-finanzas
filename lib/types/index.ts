@@ -131,6 +131,7 @@ export interface Expense {
   installments: number; // Defecto 1
   category?: ExpenseCategory; // Sin valor se deduce de la razón
   isRecurring?: boolean; // Gasto mensual persistente
+  keepsBalance?: boolean; // Gasto pasado ya reflejado en el saldo: no mueve la cuenta
   notes?: string;
   paymentAccountId?: string;
   obligationId?: string;

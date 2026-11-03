@@ -1,4 +1,5 @@
-import type { PlannedCashFlow } from '@/lib/types';
+import type { Expense, FinancialEvent, PlannedCashFlow } from '@/lib/types';
+import { normalizeText } from './categories';
 
 export function recurringFlowKey(flow: Pick<PlannedCashFlow, 'type' | 'accountId' | 'concept'>): string {
     return `${flow.type}|${flow.accountId}|${flow.concept.trim().toLocaleLowerCase('es-CO')}`;
@@ -26,4 +27,14 @@ export function buildRecurringFlowCopies(
             updatedAt: now,
         }];
     });
+}
+
+/**
+ * Whether a planned expense was already paid this period: an expense registered from it, or one the user
+ * typed by hand with the same description from the same account.
+ */
+export function isPlannedExpensePaid(flow: PlannedCashFlow, events: FinancialEvent[], expenses: Expense[]): boolean {
+    if (events.some(event => event.type === 'EXPENSE' && event.plannedCashFlowId === flow.id)) return true;
+    const concept = normalizeText(flow.concept);
+    return expenses.some(expense => expense.periodId === flow.periodId && expense.paymentAccountId === flow.accountId && normalizeText(expense.reason) === concept);
 }
